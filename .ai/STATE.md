@@ -5,7 +5,15 @@
 最終更新: 2026-06-16 (全フェーズ完了)
 
 ## 現在のフェーズ
-**完成 — 全6フェーズ完了。GitHub公開可能な状態。**
+**完成 — 全6フェーズ完了 ＋ `/game` マージモード完成。GitHub公開済み。**
+
+### 追加モード `/game`（マージ × ループディフェンス × ローグライク）
+- スマホDnD（Pointer Events・指追従ゴースト）、単一固定画面（スクロール/選択/コピー抑止）。
+- 5×5マージ盤（同種・同Lv融合・最大Lv9）、経路を進む歪み（normal/swift/tank/boss）を
+  器具が射程内で自動射撃、観測官HP0で陥落、波クリアで3択カード強化（全20波・5波毎ボス）。
+- 売却ゾーン、更新(リロール)、2倍速、最高到達波の localStorage 保存、初回チュートリアル。
+- 純粋ロジックは `src/lib/merge/engine.ts` に分離し vitest 23件で検証（合計 test 37件）。
+- 単一ファイル `src/app/game/page.tsx`、外部ライブラリ不使用。
 
 ## フェーズ進捗
 - [x] Phase 0 — Scaffolding (Next.js 14 + TS + Tailwind, static export, build通過)

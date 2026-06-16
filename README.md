@@ -41,6 +41,31 @@ the build.
 
 ---
 
+## Game mode: `/game` — merge × loop-defense × roguelike
+
+A second, self-contained screen at **[`/game`](./src/app/game/page.tsx)** turns the world
+into a touch-first **merge auto-battler**. It is designed for phones: one fixed,
+non-scrolling screen, unified Pointer-Events drag (mouse **and** touch), and text
+selection / copy / long-press callout disabled for an app-like feel.
+
+1. **Deploy** — drag an instrument from the bottom tray onto the **5×5 board**.
+2. **Merge** — drop a unit onto a **same type + same level** unit to fuse it into the
+   next level (attack scales per level, up to **Lv 9**).
+3. **Attune (出撃)** — distortions (**👁** normal / **swift** / **tank** / **🌑 boss**)
+   stream along a serpentine path; each board instrument auto-targets the lead enemy in
+   range and fires a beam. Enemies that reach the **観測官 (observer)** cut HP — **0 = fall**.
+4. **Bless** — clearing a wave offers a **3-card star-blessing** pick (attack / fire-rate /
+   range / heal + max-HP / gold / level-up). **20 waves**, a boss every 5th.
+5. **Salvage** — drag a board unit onto the **売却 (sell)** ring for a gold refund.
+6. **Reroll (更新)** the tray for gold; toggle **2× speed** mid-combat. Best wave reached
+   is saved to `localStorage`.
+
+The pure logic (catalog, draw weights, wave/enemy scaling, merge & sell rules, cards) lives
+in **[`src/lib/merge/engine.ts`](./src/lib/merge/engine.ts)** and is covered by a
+[vitest suite](./src/lib/merge/engine.test.ts).
+
+---
+
 ## Develop
 
 Requires Node 18+ (built on Node 20/22).
@@ -75,13 +100,17 @@ src/
   components/
     ui/                 # Button, Badge, Panel — reusable primitives
     game/               # ItemCard, StatBar, StarChart, GameDashboard (orchestrator)
+  app/
+    game/page.tsx       # merge × loop-defense × roguelike screen (touch DnD)
   lib/
-    game/               # pure, typed game logic
+    game/               # pure, typed game logic (backpack auto-battler)
       types.ts          #   domain types
       data.ts           #   SHOP_POOL, ENEMY_PRESETS, GRID
       geometry.ts       #   footprints, placement validity, synergy ranges
       stats.ts          #   resolve placement → combat stats (synergies)
       battle.ts         #   30s / 0.1s realtime battle simulation
+    merge/              # pure logic for the /game merge mode
+      engine.ts         #   catalog, draw weights, wave/enemy scaling, merge/sell, cards
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
