@@ -1,0 +1,30 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Space scale & radii" subtitle="4px base grid; near-square corners (engraved brass, not plastic)" -->
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  html,body{margin:0}
+  body{background:var(--ink-950);padding:20px 24px;display:flex;gap:34px;flex-wrap:wrap;align-items:flex-end}
+  .meta{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);width:100%;margin-bottom:-6px}
+  .col{display:flex;gap:12px;align-items:flex-end}
+  .bar{background:linear-gradient(180deg,var(--gold-400),var(--gold-600));border-radius:2px}
+  .cap{font-family:var(--font-mono);font-size:9px;color:var(--text-muted);text-align:center;margin-top:5px}
+  .rad{width:54px;height:54px;background:var(--surface-card);border:1px solid var(--gold-line-40)}
+</style></head>
+<body class="gs-root">
+  <div class="meta">SPACING — var(--space-N) · 4px base</div>
+  <div class="col">
+    <div><div class="bar" style="width:18px;height:4px"></div><div class="cap">1·4</div></div>
+    <div><div class="bar" style="width:18px;height:8px"></div><div class="cap">2·8</div></div>
+    <div><div class="bar" style="width:18px;height:16px"></div><div class="cap">4·16</div></div>
+    <div><div class="bar" style="width:18px;height:24px"></div><div class="cap">6·24</div></div>
+    <div><div class="bar" style="width:18px;height:32px"></div><div class="cap">8·32</div></div>
+    <div><div class="bar" style="width:18px;height:48px"></div><div class="cap">12·48</div></div>
+  </div>
+  <div class="col">
+    <div><div class="rad" style="border-radius:var(--radius-xs)"></div><div class="cap">xs·2</div></div>
+    <div><div class="rad" style="border-radius:var(--radius-sm)"></div><div class="cap">sm·3</div></div>
+    <div><div class="rad" style="border-radius:var(--radius-md)"></div><div class="cap">md·5</div></div>
+    <div><div class="rad" style="border-radius:var(--radius-lg)"></div><div class="cap">lg·8</div></div>
+  </div>
+</body></html>

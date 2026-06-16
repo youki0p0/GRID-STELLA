@@ -1,0 +1,29 @@
+<!-- @dsCard group="GRID STELLA" viewport="1280x820" name="Alignment Board — game dashboard" subtitle="Full interactive backpack-puzzle dashboard: drag-drop, synergy glow, rotation, battle" -->
+<!-- @startingPoint section="GRID STELLA" subtitle="Interactive game dashboard — shop, 5×5 board, battle" viewport="1280x820" -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GRID STELLA — 天体調律盤</title>
+<link rel="stylesheet" href="../../styles.css" />
+<style>
+  html, body { margin: 0; min-height: 100%; }
+  body { background: var(--ink-pure); }
+  @keyframes gsfade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  ::selection { background: var(--gold-glow-35); color: var(--white-pure); }
+</style>
+</head>
+<body class="gs-root gs-starfield">
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="../../_ds_bundle.js"></script>
+  <script src="gameLogic.js"></script>
+  <script type="text/babel" src="GameApp.jsx"></script>
+  <script type="text/babel">
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(window.GameApp));
+  </script>
+</body>
+</html>

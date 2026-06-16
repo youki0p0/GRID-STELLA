@@ -1,0 +1,41 @@
+<!-- @dsCard group="Components" viewport="700x420" name="Game — Item Cards & Stat Bars" subtitle="Hologram shop cards and combat readout bars" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../styles.css" />
+<style>
+  html, body { margin: 0; }
+  body { background: var(--ink-950); padding: 22px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .bars { display: flex; flex-direction: column; gap: 16px; margin-top: 18px; max-width: 360px; }
+</style>
+</head>
+<body class="gs-root gs-starfield">
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="../../_ds_bundle.js"></script>
+  <script type="text/babel">
+    const { ItemCard, StatBar } = window.GRIDSTELLADesignSystem_88868c;
+    function Demo() {
+      return (
+        <div>
+          <div className="grid">
+            <ItemCard icon="📌" nameJa="観測針" nameEn="Navigator Needle" type="weapon" width={1} height={1} attack={4} cooldown={2.0} cost={3} />
+            <ItemCard icon="🌐" nameJa="天球儀" nameEn="Celestial Globe" type="weapon" width={2} height={2} attack={16} cooldown={4.5} cost={8} selected />
+            <ItemCard icon="🧭" nameJa="羅針盤の刻印" nameEn="Compass Rose" type="buff" width={1} height={1} effect="隣接する武器のクールダウンを20%短縮する。" cost={4} />
+            <ItemCard icon="🧥" nameJa="方位外套" nameEn="Navigator Coat" type="defense" width={2} height={1} effect="戦闘中、3秒ごとにシールド+4。" cost={5} affordable={false} />
+          </div>
+          <div className="bars">
+            <StatBar label="調律者 / HP" value={86} max={100} kind="hp" showShield shield={14} />
+            <StatBar label="歪んだ座標 TYPE-A / HP" value={48} max={80} kind="enemy" />
+          </div>
+        </div>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(<Demo />);
+  </script>
+</body>
+</html>
