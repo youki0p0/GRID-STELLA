@@ -116,6 +116,11 @@ src/
       enemies.ts        #   expanded roster (shielded/healer/runner) + composeWave
       progress.ts       #   run history + achievements (serialize / aggregate / evaluate)
       fx.ts             #   asset-free WebAudio blips + haptics (SSR-safe)
+      relics.ts         #   run-start relics (passive modifiers) + pickRelics
+      synergy.ts        #   board set/adjacency synergies → atk/fire/range multipliers
+      targeting.ts      #   targeting strategies (first/last/strong/weak/near)
+      score.ts          #   score, star rank, endless-mode scaling past wave 20
+      codex.ts          #   in-game codex (instruments / enemies / ultimates)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
