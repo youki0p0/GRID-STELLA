@@ -51,7 +51,7 @@ import { EXTRA_KIND, ExtraKind, FullKind, composeWave } from '@/lib/merge/enemie
 import { FREEZE_MS, GAUGE_MAX, MEND_HP, NOVA_DAMAGE, ULT_LIST, UltId, addGauge, isReady } from '@/lib/merge/skills';
 import { ACHIEVEMENTS, RunRecord, aggregate, evaluateAchievements, parseRuns, serializeRuns } from '@/lib/merge/progress';
 import { playSfx, setMuted as setSfxMuted, vibrate } from '@/lib/merge/fx';
-import { Relic, RelicId, pickRelics, relicEffect } from '@/lib/merge/relics';
+import { Relic, RelicId, relicEffect } from '@/lib/merge/relics';
 import { PlacedUnit, synergyBonus } from '@/lib/merge/synergy';
 import { Candidate, TARGET_MODES, TargetMode, nextMode, selectTarget } from '@/lib/merge/targeting';
 import { Rank, endlessHpMul, endlessPowerMul, rankLabel, runScore, starRank } from '@/lib/merge/score';
@@ -66,12 +66,27 @@ import { SHOP_ITEMS, SHOP_LIST, ShopItemId, canAfford, shopEffect } from '@/lib/
 import { EventOption, GameEvent, eventForWave } from '@/lib/merge/events';
 import { DEFAULT_META, META_LIST, MetaState, buyUpgrade, canBuy, dustReward, metaBonuses, parseMeta, serializeMeta, upgradeCost } from '@/lib/merge/prestige';
 import { BOSS_MODS, BossMod, bossModForWave, damageThrough, hasteSpeed, regenAmount } from '@/lib/merge/bosses';
+import { DRAW_WEIGHTS } from '@/lib/merge/engine';
+import { RELICS, RELIC_LIST } from '@/lib/merge/relics';
+import { CHAPTERS, StageDef, StageProgress, DEFAULT_PROGRESS, isUnlocked as stageUnlocked, markCleared, parseProgress, serializeProgress } from '@/lib/merge/stages';
+import { Collection, DEFAULT_COLLECTION, MAX_FAVORITES, lockedTypes, parseCollection, serializeCollection, toggleFavorite, unlock as colUnlock } from '@/lib/merge/collection';
+import { PITY, PULL_COST, Pull, canPull, nextPity, rollPull } from '@/lib/merge/gacha';
+import { TRIALS, Trial, TrialProgress, DEFAULT_TRIAL_PROGRESS, attemptsLeft, parseTrials, rolloverIfNewDay, serializeTrials, spendAttempt, trialReward } from '@/lib/merge/trials';
+import { IdleState, accrued, claim as idleClaim, fillPct, parseIdle, serializeIdle } from '@/lib/merge/idle';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
 const ACH_KEY = 'gs-ach';
 const SETTINGS_KEY = 'gs-settings';
 const META_KEY = 'gs-meta';
+const COLLECTION_KEY = 'gs-collection';
+const RELICUNLOCK_KEY = 'gs-relics';
+const STAGE_KEY = 'gs-stages';
+const TRIAL_KEY = 'gs-trials';
+const IDLE_KEY = 'gs-idle';
+const RESERVE_KEY = 'gs-reserve';
+const STARTER_RELICS: RelicId[] = ['lens', 'sextant', 'aegis', 'ledger'];
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const RARITY_FRAME: Record<Rarity, string> = {
   common: 'border-amber-700/40 from-neutral-800/70 to-neutral-950/80',
@@ -82,6 +97,28 @@ const RARITY_FRAME: Record<Rarity, string> = {
 let _seq = 0;
 const nextId = (p: string) => `${p}_${++_seq}`;
 const makeUnit = (type: TypeId, level = 1): Unit => ({ uid: nextId('u'), type, level });
+
+// 解放済みの器具だけから重み付き抽選する。
+function drawUnlocked(unlocked: TypeId[]): TypeId {
+  const pool = DRAW_WEIGHTS.filter((d) => unlocked.includes(d.id));
+  if (pool.length === 0) return drawType();
+  const total = pool.reduce((s, d) => s + d.w, 0);
+  let x = Math.random() * total;
+  for (const d of pool) {
+    x -= d.w;
+    if (x <= 0) return d.id;
+  }
+  return pool[0].id;
+}
+
+// 解放済みの遺物から n 個（足りなければ全体から）。
+function pickUnlockedRelics(unlocked: RelicId[], n: number): Relic[] {
+  const pool = RELIC_LIST.filter((r) => unlocked.includes(r.id));
+  const src = pool.length >= n ? [...pool] : [...RELIC_LIST];
+  const out: Relic[] = [];
+  for (let i = 0; i < n && src.length; i++) out.push(src.splice(Math.floor(Math.random() * src.length), 1)[0]);
+  return out;
+}
 
 const isExtra = (k: FullKind): k is ExtraKind => k === 'shielded' || k === 'healer' || k === 'runner';
 const kindRing = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].ring : KIND[k].ring);
@@ -180,7 +217,7 @@ function BoardBackdrop() {
  * ========================================================================== */
 export default function GamePage() {
   const [phase, setPhase] = useState<Phase>('prep');
-  const [intro, setIntro] = useState(true);
+  const [intro, setIntro] = useState(false);
   const [introStep, setIntroStep] = useState<'difficulty' | 'relic'>('difficulty');
   const [pendingDiff, setPendingDiff] = useState<Difficulty>('standard');
   const [relicChoices, setRelicChoices] = useState<Relic[]>([]);
@@ -211,6 +248,21 @@ export default function GamePage() {
   const [showMeta, setShowMeta] = useState(false);
   const [showShop, setShowShop] = useState(false);
   const [gameEvent, setGameEvent] = useState<GameEvent | null>(null);
+
+  // ---- ロビー/メタ層 ----
+  const [home, setHome] = useState(true);
+  const [lobbyView, setLobbyView] = useState<'home' | 'stages' | 'collection' | 'gacha' | 'trials' | 'idle'>('home');
+  const [collection, setCollection] = useState<Collection>(DEFAULT_COLLECTION);
+  const [relicUnlocks, setRelicUnlocks] = useState<RelicId[]>(STARTER_RELICS);
+  const [stageProgress, setStageProgress] = useState<StageProgress>(DEFAULT_PROGRESS);
+  const [trialProg, setTrialProg] = useState<TrialProgress>(DEFAULT_TRIAL_PROGRESS);
+  const [idle, setIdle] = useState<IdleState | null>(null);
+  const [reserve, setReserve] = useState(0);
+  const [pity, setPity] = useState(0);
+  const [lastPull, setLastPull] = useState<Pull | null>(null);
+  const [targetWaves, setTargetWaves] = useState(TOTAL_WAVES);
+  const [pendingStage, setPendingStage] = useState<StageDef | null>(null);
+  const [trialId, setTrialId] = useState<string | null>(null);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -246,6 +298,13 @@ export default function GamePage() {
   const mutatorRef = useRef<Mutator | null>(null);
   const bossModRef = useRef<BossMod | null>(null);
   const metaRef = useRef(meta);
+  const collectionRef = useRef(collection);
+  const relicUnlocksRef = useRef(relicUnlocks);
+  const targetWavesRef = useRef(targetWaves);
+  const trialIdRef = useRef<string | null>(null);
+  const pendingStageRef = useRef<StageDef | null>(null);
+  const pityRef = useRef(0);
+  const reserveRef = useRef(0);
   const settingsLoadedRef = useRef(false);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0, gaugeMul: 1 });
   const enemiesRef = useRef<Enemy[]>([]);
@@ -264,11 +323,36 @@ export default function GamePage() {
   useEffect(() => void (targetModeRef.current = targetMode), [targetMode]);
   useEffect(() => void (endlessRef.current = endless), [endless]);
   useEffect(() => void (metaRef.current = meta), [meta]);
+  useEffect(() => void (collectionRef.current = collection), [collection]);
+  useEffect(() => void (relicUnlocksRef.current = relicUnlocks), [relicUnlocks]);
+  useEffect(() => void (targetWavesRef.current = targetWaves), [targetWaves]);
+  useEffect(() => void (reserveRef.current = reserve), [reserve]);
+  useEffect(() => void (pityRef.current = pity), [pity]);
+  useEffect(() => void (pendingStageRef.current = pendingStage), [pendingStage]);
 
-  /* ----- メタ進行（星屑）の読み込み・保存 ----- */
+  /* ----- メタ層の読み込み ----- */
   useEffect(() => {
+    const now = Date.now();
     try {
       setMeta(parseMeta(window.localStorage.getItem(META_KEY)));
+      setCollection(parseCollection(window.localStorage.getItem(COLLECTION_KEY)));
+      setStageProgress(parseProgress(window.localStorage.getItem(STAGE_KEY)));
+      setTrialProg(rolloverIfNewDay(parseTrials(window.localStorage.getItem(TRIAL_KEY)), todayStr()));
+      setIdle(parseIdle(window.localStorage.getItem(IDLE_KEY), now));
+      setReserve(Math.max(0, Number(window.localStorage.getItem(RESERVE_KEY) || '0')));
+      const ru: unknown = JSON.parse(window.localStorage.getItem(RELICUNLOCK_KEY) || 'null');
+      if (Array.isArray(ru)) {
+        const valid = ru.filter((x): x is RelicId => typeof x === 'string' && x in RELICS);
+        if (valid.length) setRelicUnlocks(Array.from(new Set([...STARTER_RELICS, ...valid])));
+      }
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  const persist = useCallback((key: string, value: string) => {
+    try {
+      window.localStorage.setItem(key, value);
     } catch {
       /* noop */
     }
@@ -341,7 +425,12 @@ export default function GamePage() {
       const score = runScore({ wave: finalWave, kills: killsRef.current, damage: damageRef.current, won });
       setFinalScore(score);
       setFinalRank(starRank(score));
-      const dust = dustReward(score);
+      let dust = dustReward(score);
+      const tid = trialIdRef.current;
+      if (tid) {
+        const tr = TRIALS.find((t) => t.id === tid);
+        if (tr) dust += trialReward(tr, damageRef.current);
+      }
       setDustGain(dust);
       if (dust > 0) {
         setMeta((m) => {
@@ -544,7 +633,7 @@ export default function GamePage() {
     }
     setGold((g) => g - cost);
     setRerolls((r) => r + 1);
-    setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
+    setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawUnlocked(collectionRef.current.unlocked))));
     playSfx('place');
     setStatus('器具棚を組み直した。');
   }, [phase, gold, rerolls]);
@@ -554,7 +643,7 @@ export default function GamePage() {
       const i = prev.findIndex((o) => o === null);
       if (i < 0) return prev;
       const next = [...prev];
-      next[i] = makeUnit(drawType());
+      next[i] = makeUnit(drawUnlocked(collectionRef.current.unlocked));
       return next;
     });
   }, []);
@@ -756,11 +845,22 @@ export default function GamePage() {
         setGold((g) => g + bonus);
         recordBest(cleared);
         playSfx('wave');
-        if (cleared >= TOTAL_WAVES && !endlessRef.current) {
+        if (cleared >= targetWavesRef.current && !endlessRef.current) {
           playSfx('ultimate');
           finishRun(true);
           setPhase('victory');
-          setStatus('全 20 波を退けた。世界の座標は調律された。');
+          const st = pendingStageRef.current;
+          if (st) {
+            setStageProgress((p) => {
+              const np = markCleared(p, st.id);
+              persist(STAGE_KEY, serializeProgress(np));
+              return np;
+            });
+            setMeta((m) => { const nm = { ...m, dust: m.dust + Math.max(1, Math.round(st.reward / 4)) }; saveMeta(nm); return nm; });
+            setStatus(`${st.name} を制覇した。観測階を踏破。`);
+          } else {
+            setStatus('全 20 波を退けた。世界の座標は調律された。');
+          }
           return;
         }
         setCards(pick3());
@@ -772,7 +872,7 @@ export default function GamePage() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [phase, recordBest, finishRun]);
+  }, [phase, recordBest, finishRun, persist, saveMeta]);
 
   /* ----- アルティメット ----- */
   const triggerUlt = useCallback(
@@ -982,7 +1082,12 @@ export default function GamePage() {
     setIntroStep('difficulty');
     setPhase('prep');
     setWave(1);
-    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold);
+    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold + reserveRef.current);
+    if (reserveRef.current > 0) {
+      setReserve(0);
+      reserveRef.current = 0;
+      persist(RESERVE_KEY, '0');
+    }
     setHp(nmax);
     setMaxHp(nmax);
     setKills(0);
@@ -993,14 +1098,19 @@ export default function GamePage() {
     setNewAch([]);
     setFinalScore(0);
     setFinalRank('D');
-    setBoard({});
-    setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
+    // お気に入り器具を開始ロードアウトとして最上段へ配置
+    const initBoard: Board = {};
+    collectionRef.current.favorites.slice(0, GRID).forEach((t, i) => {
+      initBoard[keyOf(0, i)] = makeUnit(t, 1);
+    });
+    setBoard(initBoard);
+    setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawUnlocked(collectionRef.current.unlocked))));
     setEnemies([]);
     setBeams([]);
     setPopups([]);
     setCards([]);
     setStatus(`遺物【${chosen.name}】を携えた。器具を盤へ運んで融合せよ。`);
-  }, []);
+  }, [persist]);
 
   const continueEndless = useCallback(() => {
     endlessRef.current = true;
@@ -1012,14 +1122,117 @@ export default function GamePage() {
 
   const restart = useCallback(() => {
     setPhase('prep');
-    setIntro(true);
+    setIntro(false);
     setIntroStep('difficulty');
     setEndless(false);
+    setTrialId(null);
+    trialIdRef.current = null;
+    setPendingStage(null);
     setNewAch([]);
     setGameEvent(null);
     setBossMod(null);
     setMutator(null);
-    setStatus('難易度と遺物を選び、再び歪みを迎え撃て。');
+    setHome(true);
+    setLobbyView('home');
+    setStatus('観測局へ戻った。');
+  }, []);
+
+  /* ----- ロビー操作 ----- */
+  const idleMult = 1 + stageProgress.cleared.length * 0.1;
+  const idleYield = idle ? accrued(idle, Date.now(), idleMult) : null;
+
+  const claimIdleNow = useCallback(() => {
+    if (!idle) return;
+    const now = Date.now();
+    const y = accrued(idle, now, 1 + stageProgress.cleared.length * 0.1);
+    if (y.gold <= 0 && y.dust <= 0) {
+      setStatus('まだ蓄積が無い。');
+      return;
+    }
+    const ns = idleClaim(idle, now);
+    setIdle(ns);
+    persist(IDLE_KEY, serializeIdle(ns));
+    if (y.dust > 0) setMeta((m) => { const nm = { ...m, dust: m.dust + y.dust }; saveMeta(nm); return nm; });
+    if (y.gold > 0) setReserve((r) => { const nr = r + y.gold; persist(RESERVE_KEY, String(nr)); return nr; });
+    setStatus(`放置収益を受領：🌌+${y.dust} ・ 蓄ゴールド +${y.gold}`);
+  }, [idle, stageProgress, persist, saveMeta]);
+
+  const doPull = useCallback(() => {
+    setMeta((m) => {
+      if (!canPull(m.dust)) {
+        setStatus('星屑が足りない。');
+        return m;
+      }
+      const pull = rollPull(Math.random, pityRef.current);
+      setLastPull(pull);
+      pityRef.current = nextPity(pityRef.current, pull);
+      setPity(pityRef.current);
+      if (pull.kind === 'instrument' && pull.instrument) {
+        setCollection((c) => { const nc = colUnlock(c, pull.instrument!); persist(COLLECTION_KEY, serializeCollection(nc)); return nc; });
+      } else if (pull.kind === 'relic' && pull.relic) {
+        setRelicUnlocks((ru) => { const nru = ru.includes(pull.relic!) ? ru : [...ru, pull.relic!]; persist(RELICUNLOCK_KEY, JSON.stringify(nru)); return nru; });
+      }
+      const nm = { ...m, dust: m.dust - PULL_COST };
+      saveMeta(nm);
+      return nm;
+    });
+  }, [persist, saveMeta]);
+
+  const toggleFav = useCallback(
+    (t: TypeId) => {
+      setCollection((c) => { const nc = toggleFavorite(c, t); persist(COLLECTION_KEY, serializeCollection(nc)); return nc; });
+    },
+    [persist],
+  );
+
+  const chooseStage = useCallback(
+    (st: StageDef) => {
+      setPendingStage(st);
+      setTrialId(null);
+      trialIdRef.current = null;
+      setPendingDiff(st.difficulty);
+      setTargetWaves(st.waves);
+      targetWavesRef.current = st.waves;
+      setRelicChoices(pickUnlockedRelics(relicUnlocksRef.current, 3));
+      setHome(false);
+      setIntro(true);
+      setIntroStep('relic');
+    },
+    [],
+  );
+
+  const startTrial = useCallback(
+    (tr: Trial) => {
+      if (attemptsLeft(tr, trialProg, todayStr()) <= 0) {
+        setStatus('本日の挑戦回数は尽きた。');
+        return;
+      }
+      const np = spendAttempt(trialProg, tr.id, todayStr());
+      setTrialProg(np);
+      persist(TRIAL_KEY, serializeTrials(np));
+      setTrialId(tr.id);
+      trialIdRef.current = tr.id;
+      setPendingStage(null);
+      setPendingDiff('harsh');
+      setTargetWaves(999);
+      targetWavesRef.current = 999;
+      setRelicChoices(pickUnlockedRelics(relicUnlocksRef.current, 3));
+      setHome(false);
+      setIntro(true);
+      setIntroStep('relic');
+    },
+    [trialProg, persist],
+  );
+
+  const quickPlay = useCallback(() => {
+    setPendingStage(null);
+    setTrialId(null);
+    trialIdRef.current = null;
+    setTargetWaves(TOTAL_WAVES);
+    targetWavesRef.current = TOTAL_WAVES;
+    setHome(false);
+    setIntro(true);
+    setIntroStep('difficulty');
   }, []);
 
   const toggleMute = useCallback(() => {
@@ -1071,7 +1284,7 @@ export default function GamePage() {
 
       <div className="flex h-full w-full max-w-[440px] flex-col px-3 pb-2 pt-2">
         {/* ===================== 上部 HUD ===================== */}
-        <header className="flex-shrink-0">
+        <header className={`flex-shrink-0 ${home ? 'invisible' : ''}`}>
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate font-display text-[10px] uppercase tracking-[0.32em] text-amber-400/80">GRID STELLA</p>
@@ -1225,7 +1438,7 @@ export default function GamePage() {
             )}
 
             {/* ===== 導入：難易度 → 遺物 ===== */}
-            {intro && (
+            {intro && !home && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/92 px-5 text-center backdrop-blur-sm" style={{ zIndex: 50 }}>
                 {introStep === 'difficulty' ? (
                   <>
@@ -1233,7 +1446,7 @@ export default function GamePage() {
                     <p className="font-display text-lg tracking-wide text-stone-100">難易度を選ぶ</p>
                     <div className="flex w-full gap-2">
                       {DIFFICULTY_LIST.map((d) => (
-                        <button key={d.id} type="button" onClick={() => { setPendingDiff(d.id); setRelicChoices(pickRelics(3)); setIntroStep('relic'); }} className="flex flex-1 flex-col items-center gap-1 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_20px_rgba(205,167,54,0.35)] active:scale-95">
+                        <button key={d.id} type="button" onClick={() => { setPendingDiff(d.id); setRelicChoices(pickUnlockedRelics(relicUnlocksRef.current, 3)); setIntroStep('relic'); }} className="flex flex-1 flex-col items-center gap-1 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_20px_rgba(205,167,54,0.35)] active:scale-95">
                           <span className="font-ritual text-[13px] tracking-wide text-amber-100">{d.label}</span>
                           <span className="text-center font-ritual text-[9px] leading-tight text-stone-400">{d.desc}</span>
                         </button>
@@ -1392,11 +1605,155 @@ export default function GamePage() {
                 </div>
               </div>
             )}
+
+            {/* ===== ロビー（観測局ハブ） ===== */}
+            {home && (
+              <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/95 backdrop-blur-sm" style={{ zIndex: 55 }}>
+                <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
+                  <div>
+                    <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : '放置観測'}</p>
+                    <p className="font-mono text-[10px] text-amber-300/70">🌌{meta.dust} ・ 🪙貯蓄{reserve} ・ 最高{best}波</p>
+                  </div>
+                  {lobbyView !== 'home' ? (
+                    <button type="button" onClick={() => setLobbyView('home')} className="rounded-md border border-amber-700/30 bg-neutral-900/60 px-2 py-1 text-[11px] text-amber-200 active:scale-95">← 戻る</button>
+                  ) : (
+                    <button type="button" onClick={() => setShowCodex(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">📖</button>
+                  )}
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
+                  {lobbyView === 'home' && (
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {([
+                        { k: 'play', icon: '▶', label: '出撃', sub: '観測階を選ぶ', on: () => setLobbyView('stages') },
+                        { k: 'quick', icon: '⚡', label: 'クイック出撃', sub: '難易度即決', on: quickPlay },
+                        { k: 'gacha', icon: '🎰', label: '召喚', sub: '星屑で解放', on: () => setLobbyView('gacha') },
+                        { k: 'col', icon: '📚', label: 'コレクション', sub: '編成・お気に入り', on: () => setLobbyView('collection') },
+                        { k: 'trial', icon: '⚔', label: '試練の道', sub: 'ダメージ目標', on: () => setLobbyView('trials') },
+                        { k: 'idle', icon: '💤', label: '放置観測', sub: '時間で収益', on: () => setLobbyView('idle') },
+                        { k: 'meta', icon: '🌌', label: '星屑強化', sub: '恒久upgrade', on: () => setShowMeta(true) },
+                      ] as const).map((b) => (
+                        <button key={b.k} type="button" onClick={b.on} className="flex flex-col items-start gap-0.5 rounded-lg border border-amber-600/30 bg-gradient-to-b from-neutral-800/60 to-neutral-950/70 p-3 text-left transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_18px_rgba(205,167,54,0.3)] active:scale-95">
+                          <span className="text-xl">{b.icon}</span>
+                          <span className="font-ritual text-[13px] tracking-wide text-amber-100">{b.label}</span>
+                          <span className="font-ritual text-[9px] text-stone-500">{b.sub}</span>
+                        </button>
+                      ))}
+                      {idleYield && (idleYield.gold > 0 || idleYield.dust > 0) && (
+                        <button type="button" onClick={() => setLobbyView('idle')} className="col-span-2 rounded-lg border border-emerald-400/50 bg-emerald-500/10 p-2 text-center font-ritual text-[11px] text-emerald-200 active:scale-95">💤 放置収益 🪙{idleYield.gold} ・ 🌌{idleYield.dust} を受け取る</button>
+                      )}
+                    </div>
+                  )}
+
+                  {lobbyView === 'stages' && (
+                    <div className="space-y-3">
+                      {CHAPTERS.map((ch) => (
+                        <div key={ch.chapter}>
+                          <p className="gs-eyebrow mb-1 text-amber-300/70">第{ch.chapter}章 ・ {ch.name}</p>
+                          <div className="space-y-1.5">
+                            {ch.stages.map((st) => {
+                              const unlocked = stageUnlocked(st.id, stageProgress);
+                              const done = stageProgress.cleared.includes(st.id);
+                              return (
+                                <button key={st.id} type="button" disabled={!unlocked} onClick={() => chooseStage(st)} className={`flex w-full items-center gap-2 rounded-md border p-2 text-left transition-all active:scale-[0.99] ${unlocked ? 'border-amber-600/30 bg-neutral-900/50 hover:border-amber-400/60' : 'border-neutral-800 bg-neutral-950/60 opacity-45'}`}>
+                                  <span className="text-base">{st.elite ? '👑' : done ? '✅' : unlocked ? '✦' : '🔒'}</span>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="font-ritual text-[12px] text-amber-100">{st.name}{st.elite ? ' ・ エリート' : ''}</p>
+                                    <p className="font-mono text-[9px] text-stone-500">{st.waves}波 ・ {DIFFICULTIES[st.difficulty].label} ・ 報酬🌌{Math.max(1, Math.round(st.reward / 4))}</p>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {lobbyView === 'collection' && (
+                    <div className="space-y-2">
+                      <p className="font-ritual text-[10px] text-stone-400">お気に入り（最大{MAX_FAVORITES}）は開始ロードアウトとして盤に置かれる。{collection.favorites.length}/{MAX_FAVORITES}</p>
+                      {(Object.keys(TYPES) as TypeId[]).map((t) => {
+                        const owned = collection.unlocked.includes(t);
+                        const fav = collection.favorites.includes(t);
+                        const def = TYPES[t];
+                        return (
+                          <div key={t} className={`flex items-center gap-2 rounded-md border p-2 ${owned ? 'border-amber-600/30 bg-neutral-900/50' : 'border-neutral-800 bg-neutral-950/60 opacity-50'}`}>
+                            <span className="text-xl">{def.emoji}</span>
+                            <div className="min-w-0 flex-1">
+                              <p className="font-ritual text-[12px] text-amber-100">{def.name} <span className="text-stone-500">{def.note}</span></p>
+                              <p className="font-mono text-[9px] text-stone-500">{owned ? `攻${def.atk} 射${def.range} 連${def.fireMs}ms` : '未解放（召喚で入手）'}</p>
+                            </div>
+                            {owned && (
+                              <button type="button" onClick={() => toggleFav(t)} className={`rounded-md border px-2 py-1 text-[10px] active:scale-95 ${fav ? 'border-amber-300/70 bg-amber-400/20 text-amber-100' : 'border-amber-700/30 bg-neutral-900 text-stone-400'}`}>{fav ? '★編成中' : '☆編成'}</button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {lobbyView === 'gacha' && (
+                    <div className="flex flex-col items-center gap-3 py-2">
+                      <p className="font-ritual text-[11px] text-stone-300">星屑を捧げ、器具や遺物を恒久解放する。</p>
+                      <div className="flex h-28 w-28 items-center justify-center rounded-full border border-amber-400/50 bg-gradient-to-b from-amber-900/40 to-neutral-950 shadow-[0_0_24px_rgba(205,167,54,0.35)]">
+                        <span className="text-5xl drop-shadow-[0_0_12px_rgba(205,167,54,0.7)]">{lastPull ? (lastPull.kind === 'instrument' && lastPull.instrument ? TYPES[lastPull.instrument].emoji : lastPull.relic ? RELICS[lastPull.relic].icon : '✦') : '🌠'}</span>
+                      </div>
+                      {lastPull && (
+                        <p className="font-ritual text-[11px] text-amber-100">{lastPull.kind === 'instrument' && lastPull.instrument ? TYPES[lastPull.instrument].name : lastPull.relic ? RELICS[lastPull.relic].name : ''} <span className="text-stone-500">（{lastPull.rarity}）</span></p>
+                      )}
+                      <p className="font-mono text-[10px] text-amber-300/70">🌌{meta.dust} ・ 天井まで {Math.max(0, PITY - pity)}</p>
+                      <button type="button" onClick={doPull} disabled={!canPull(meta.dust)} className="rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 px-6 py-2.5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:opacity-40">召喚（🌌{PULL_COST}）</button>
+                      <p className="font-ritual text-[9px] text-stone-500">未解放の器具：{lockedTypes(collection).length} 種</p>
+                    </div>
+                  )}
+
+                  {lobbyView === 'trials' && (
+                    <div className="space-y-2">
+                      {TRIALS.map((tr) => {
+                        const left = attemptsLeft(tr, trialProg, todayStr());
+                        return (
+                          <div key={tr.id} className="rounded-md border border-amber-600/30 bg-neutral-900/50 p-2.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xl">{tr.icon}</span>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-ritual text-[12px] text-amber-100">{tr.name}</p>
+                                <p className="font-ritual text-[9px] text-stone-400">{tr.desc}</p>
+                              </div>
+                              <button type="button" onClick={() => startTrial(tr)} disabled={left <= 0} className="rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-display text-[11px] text-amber-100 active:scale-95 disabled:opacity-40">挑戦 {left}/{tr.dailyAttempts}</button>
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {tr.goals.map((g, i) => (
+                                <span key={i} className="rounded-full border border-amber-700/30 bg-neutral-950/60 px-2 py-0.5 font-mono text-[9px] text-amber-200/80">{abbrev(g.dmg)}→🌌{g.dust}</span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <p className="font-ritual text-[9px] text-stone-500">試練は苛烈・終わり無き歪みの中で、与えた総ダメージに応じて星屑を得る。</p>
+                    </div>
+                  )}
+
+                  {lobbyView === 'idle' && (
+                    <div className="flex flex-col items-center gap-3 py-3">
+                      <span className="text-4xl">💤</span>
+                      <p className="font-ritual text-[11px] text-stone-300">観測局は無人でも星を読み続ける（最大8時間）。</p>
+                      <div className="h-2.5 w-full overflow-hidden rounded-full border border-amber-700/30 bg-neutral-900">
+                        <div className="h-full rounded-full bg-gradient-to-r from-amber-500 to-amber-200" style={{ width: `${(idle ? fillPct(idle, Date.now()) : 0) * 100}%` }} />
+                      </div>
+                      <p className="font-mono text-[12px] text-amber-300">🪙{idleYield?.gold ?? 0} ・ 🌌{idleYield?.dust ?? 0}{idleYield?.capped ? ' ・ 満杯' : ''}</p>
+                      <button type="button" onClick={claimIdleNow} disabled={!idleYield || (idleYield.gold <= 0 && idleYield.dust <= 0)} className="rounded-lg border border-amber-400/60 bg-amber-400/10 px-6 py-2.5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 hover:-translate-y-0.5 active:scale-95 disabled:opacity-40">収益を受け取る</button>
+                      <p className="font-ritual text-[9px] text-stone-500">収益倍率は踏破した観測階の数で上がる（現在 ×{idleMult.toFixed(1)}）。蓄ゴールドは次の出撃の開始資金に加算。</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* ===================== 下部トレイ ===================== */}
-        <footer className="flex-shrink-0">
+        <footer className={`flex-shrink-0 ${home ? 'invisible' : ''}`}>
           {/* 必殺ゲージ（戦闘中） / シナジー表示（準備中） */}
           {combat ? (
             <div className="mb-1.5 flex items-center gap-2">
