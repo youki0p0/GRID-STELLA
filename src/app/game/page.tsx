@@ -4,70 +4,81 @@
  * GRID STELLA — 方位観察官の天体調律盤
  * マージ × ループディフェンス × ローグライク（スマホDnD対応・単一画面）
  *
- * 完全に自己完結した 1 ファイル。外部ライブラリ不使用、Next.js (App Router) の
- * クライアントコンポーネント + Tailwind CSS のみ。
+ * 純粋ロジックは src/lib/merge/* に分離（並列開発した5モジュールを統合）:
+ *   engine   … 盤・経路・器具・マージ・基本波
+ *   balance  … 難易度（やさしい/標準/苛烈）・経済（更新費・波報酬・敵スケール）
+ *   skills   … 必殺ゲージと3種のアルティメット（星霜爆/時間停止/観測補填）
+ *   enemies  … 拡張敵ロスター（盾持ち/治癒/俊足）と合成波 composeWave
+ *   progress … 走行履歴・実績の保存/集計/判定（純粋）
+ *   fx       … WebAudio合成音 ＋ 触覚（アセット不要・SSR安全）
  *
- * 設計要点:
- *   - Pointer Events による統一ドラッグ（マウス／タッチ両対応・指で快適に操作）。
- *   - 盤は 5×5 のマージ盤。同種・同レベルの器具を重ねると 1 つ上の器具に融合。
- *   - 出撃すると「歪み」が経路を進み、器具が射程内を自動で撃つループディフェンス。
- *   - 歪みが観測官へ到達すると HP 減、0 で陥落。波クリアで 3 択の星位カード強化。
- *   - 画面はスクロールせず固定。テキスト選択／コピー／長押しメニューを無効化。
+ * 画面はスクロールせず固定。テキスト選択／コピー／長押しメニューを無効化。
+ * Pointer Events による統一ドラッグ（マウス／タッチ両対応）。外部ライブラリ不使用。
  * ========================================================================== */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CardDef,
+  GRID,
+  KIND,
+  MAX_HP,
+  MAX_LV,
+  OFFER_SLOTS,
+  PATH,
+  REROLL_COST,
+  Rarity,
+  TOTAL_WAVES,
+  TYPES,
+  TypeId,
+  Unit,
+  canMerge,
+  drawType,
+  enemyCell,
+  keyOf,
+  pctX,
+  pctY,
+  pick3,
+  sellValue,
+  unitAtk,
+} from '@/lib/merge/engine';
+import {
+  DIFFICULTIES,
+  DIFFICULTY_LIST,
+  Difficulty,
+  rerollCost,
+  scaledEnemyHp,
+  scaledEnemyPower,
+  waveReward,
+} from '@/lib/merge/balance';
+import {
+  EXTRA_KIND,
+  ExtraKind,
+  FullKind,
+  composeWave,
+} from '@/lib/merge/enemies';
+import {
+  FREEZE_MS,
+  GAUGE_MAX,
+  MEND_HP,
+  NOVA_DAMAGE,
+  ULT_LIST,
+  UltId,
+  addGauge,
+  isReady,
+} from '@/lib/merge/skills';
+import {
+  ACHIEVEMENTS,
+  RunRecord,
+  aggregate,
+  evaluateAchievements,
+  parseRuns,
+  serializeRuns,
+} from '@/lib/merge/progress';
+import { playSfx, setMuted as setSfxMuted, vibrate } from '@/lib/merge/fx';
 
-/* ----------------------------------------------------------------------------
- * 定数
- * -------------------------------------------------------------------------- */
-const GRID = 5;
-const MAX_LV = 9;
-const MAX_HP = 100;
-const TOTAL_WAVES = 20;
-const REROLL_COST = 2;
-const OFFER_SLOTS = 3;
-
-// 盤を縫う進行経路（蛇行）。最上段の左から、段ごとに折り返して最下段へ。
-const PATH: { r: number; c: number }[] = (() => {
-  const cells: { r: number; c: number }[] = [];
-  for (let r = 0; r < GRID; r++) {
-    const cols = r % 2 === 0 ? [0, 1, 2, 3, 4] : [4, 3, 2, 1, 0];
-    for (const c of cols) cells.push({ r, c });
-  }
-  return cells;
-})();
-
-// セル中心（盤に対する％座標。100/GRID = 20）
-const pctX = (c: number) => (c + 0.5) * (100 / GRID);
-const pctY = (r: number) => (r + 0.5) * (100 / GRID);
-const keyOf = (r: number, c: number) => r + ',' + c;
-
-/* ----------------------------------------------------------------------------
- * 器具タイプ定義（マージ素材）。range はセル単位の射程、fireMs は連射間隔。
- * -------------------------------------------------------------------------- */
-type TypeId = 'needle' | 'compass' | 'globe' | 'telescope' | 'hourglass' | 'armillary';
-type Rarity = 'common' | 'rare' | 'astral';
-
-interface TypeDef {
-  id: TypeId;
-  name: string;
-  emoji: string;
-  atk: number; // レベル1の攻撃
-  range: number; // 射程（セル単位）
-  fireMs: number; // 連射間隔（ms）
-  rarity: Rarity;
-  note: string;
-}
-
-const TYPES: Record<TypeId, TypeDef> = {
-  needle: { id: 'needle', name: '観測針', emoji: '📌', atk: 7, range: 1.7, fireMs: 620, rarity: 'common', note: '近距離・速射' },
-  hourglass: { id: 'hourglass', name: '星時計', emoji: '⏳', atk: 4, range: 1.5, fireMs: 420, rarity: 'common', note: '至近・連射' },
-  compass: { id: 'compass', name: '羅針盤', emoji: '🧭', atk: 9, range: 2.0, fireMs: 700, rarity: 'rare', note: '万能' },
-  globe: { id: 'globe', name: '天球儀', emoji: '🌐', atk: 6, range: 2.4, fireMs: 480, rarity: 'rare', note: '中距離・速射' },
-  armillary: { id: 'armillary', name: '環状儀', emoji: '🪐', atk: 12, range: 2.7, fireMs: 760, rarity: 'astral', note: '遠距離・強撃' },
-  telescope: { id: 'telescope', name: '望遠鏡', emoji: '🔭', atk: 18, range: 3.4, fireMs: 1050, rarity: 'astral', note: '超長距離・狙撃' },
-};
-const TYPE_LIST = Object.values(TYPES);
+const BEST_KEY = 'gs-best-wave';
+const RUNS_KEY = 'gs-runs';
+const ACH_KEY = 'gs-ach';
 
 const RARITY_FRAME: Record<Rarity, string> = {
   common: 'border-amber-700/40 from-neutral-800/70 to-neutral-950/80',
@@ -75,46 +86,29 @@ const RARITY_FRAME: Record<Rarity, string> = {
   astral: 'border-amber-300/60 from-amber-900/40 to-neutral-950/85',
 };
 
-// 抽選の重み（レアほど低確率）。波が進むほど上位も出やすく…は割愛しシンプルに。
-const DRAW_WEIGHTS: { id: TypeId; w: number }[] = [
-  { id: 'needle', w: 30 },
-  { id: 'hourglass', w: 26 },
-  { id: 'compass', w: 18 },
-  { id: 'globe', w: 16 },
-  { id: 'armillary', w: 7 },
-  { id: 'telescope', w: 3 },
-];
+let _seq = 0;
+const nextId = (p: string) => `${p}_${++_seq}`;
+const makeUnit = (type: TypeId, level = 1): Unit => ({ uid: nextId('u'), type, level });
 
-function drawType(): TypeId {
-  const total = DRAW_WEIGHTS.reduce((s, d) => s + d.w, 0);
-  let x = Math.random() * total;
-  for (const d of DRAW_WEIGHTS) {
-    x -= d.w;
-    if (x <= 0) return d.id;
-  }
-  return 'needle';
-}
+const isExtra = (k: FullKind): k is ExtraKind => k === 'shielded' || k === 'healer' || k === 'runner';
+const kindRing = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].ring : KIND[k].ring);
+const kindEmoji = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].emoji : k === 'boss' ? '🌑' : '👁');
+const kindSizeVw = (k: FullKind) => (k === 'boss' ? 13 : k === 'tank' || k === 'shielded' ? 10 : k === 'swift' || k === 'runner' ? 6.5 : 8);
 
 /* ----------------------------------------------------------------------------
- * 型
+ * 型（画面ローカル）
  * -------------------------------------------------------------------------- */
-interface Unit {
-  uid: string;
-  type: TypeId;
-  level: number;
-}
-type Board = Record<string, Unit>; // cellKey -> Unit
+type Board = Record<string, Unit>;
 
 interface Enemy {
   id: string;
-  pos: number; // 経路上の連続位置（負＝盤外で待機）
+  pos: number;
   hp: number;
   maxHp: number;
   power: number;
   speed: number;
-  boss?: boolean;
+  kind: FullKind;
 }
-
 interface Beam {
   id: string;
   x1: number;
@@ -137,7 +131,6 @@ interface Fx {
   y: number;
   born: number;
 }
-
 type Phase = 'prep' | 'combat' | 'cardpick' | 'gameover' | 'victory';
 
 interface DragState {
@@ -148,50 +141,14 @@ interface DragState {
   x: number;
   y: number;
   hover: { r: number; c: number; key: string } | null;
+  overSell: boolean;
 }
 
-interface CardDef {
-  id: string;
-  icon: string;
-  title: string;
-  desc: string;
-}
-
-const CARD_POOL: CardDef[] = [
-  { id: 'atk', icon: '⚔', title: '星霜の祝福', desc: '全器具の攻撃 +25%' },
-  { id: 'fast', icon: '⚡', title: '疾風の祝福', desc: '全器具の連射 +20%' },
-  { id: 'range', icon: '🎯', title: '遠見の祝福', desc: '全器具の射程 +0.6' },
-  { id: 'heal', icon: '❤', title: '癒しの祝福', desc: 'HP全回復 ＆ 最大HP +12' },
-  { id: 'gold', icon: '🧭', title: '富貴の祝福', desc: '即時 +10G' },
-  { id: 'levelup', icon: '✦', title: '昇格の祝福', desc: '盤上の器具を1つ +1Lv' },
-];
-
-let _seq = 0;
-const nextId = (p: string) => `${p}_${++_seq}`;
-const makeUnit = (type: TypeId, level = 1): Unit => ({ uid: nextId('u'), type, level });
-const unitAtk = (u: Unit) => Math.round(TYPES[u.type].atk * (1 + (u.level - 1) * 0.9));
-
-function pick3(): CardDef[] {
-  const pool = [...CARD_POOL];
-  const out: CardDef[] = [];
-  for (let i = 0; i < 3 && pool.length; i++) {
-    out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
-  }
-  return out;
-}
-
-// 歪みの経路位置 → セル空間 (r,c 連続値)
-function enemyCell(pos: number) {
-  if (pos < 0) return { r: PATH[0].r - 0.6, c: PATH[0].c };
-  const clamped = Math.min(PATH.length - 1, pos);
-  const i0 = Math.floor(clamped);
-  const i1 = Math.min(PATH.length - 1, i0 + 1);
-  const f = clamped - i0;
-  return {
-    r: PATH[i0].r + (PATH[i1].r - PATH[i0].r) * f,
-    c: PATH[i0].c + (PATH[i1].c - PATH[i0].c) * f,
-  };
-}
+const pointInRect = (el: HTMLElement | null, x: number, y: number) => {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+};
 
 /* ============================================================================
  * 盤背景 — 天球図 / コンパスローズ（純 SVG）
@@ -216,15 +173,7 @@ function BoardBackdrop() {
         {spokes.map((deg, i) => {
           const rad = (deg * Math.PI) / 180;
           return (
-            <line
-              key={i}
-              x1={50 + Math.cos(rad) * 48 * 0.14}
-              y1={50 + Math.sin(rad) * 48 * 0.14}
-              x2={50 + Math.cos(rad) * 48 * 0.95}
-              y2={50 + Math.sin(rad) * 48 * 0.95}
-              stroke="rgba(218,185,79,0.08)"
-              strokeWidth={i % 6 === 0 ? 0.35 : 0.18}
-            />
+            <line key={i} x1={50 + Math.cos(rad) * 48 * 0.14} y1={50 + Math.sin(rad) * 48 * 0.14} x2={50 + Math.cos(rad) * 48 * 0.95} y2={50 + Math.sin(rad) * 48 * 0.95} stroke="rgba(218,185,79,0.08)" strokeWidth={i % 6 === 0 ? 0.35 : 0.18} />
           );
         })}
       </g>
@@ -237,18 +186,23 @@ function BoardBackdrop() {
  * ========================================================================== */
 export default function GamePage() {
   const [phase, setPhase] = useState<Phase>('prep');
+  const [intro, setIntro] = useState(true);
+  const [difficulty, setDifficulty] = useState<Difficulty>('standard');
   const [wave, setWave] = useState(1);
+  const [best, setBest] = useState(0);
   const [gold, setGold] = useState(0);
   const [hp, setHp] = useState(MAX_HP);
   const [maxHp, setMaxHp] = useState(MAX_HP);
   const [kills, setKills] = useState(0);
   const [damage, setDamage] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [gauge, setGauge] = useState(0);
+  const [rerolls, setRerolls] = useState(0);
+  const [muted, setMutedState] = useState(false);
+  const [newAch, setNewAch] = useState<string[]>([]);
 
   const [board, setBoard] = useState<Board>({});
-  const [offers, setOffers] = useState<(Unit | null)[]>(() =>
-    Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())),
-  );
+  const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
 
   const [enemies, setEnemies] = useState<Enemy[]>([]);
   const [beams, setBeams] = useState<Beam[]>([]);
@@ -257,9 +211,10 @@ export default function GamePage() {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [cards, setCards] = useState<CardDef[]>([]);
   const [hurt, setHurt] = useState(false);
-  const [status, setStatus] = useState('器具を盤へ運び、同じものを重ねて融合せよ。');
+  const [status, setStatus] = useState('難易度を選び、器具を盤へ運んで融合せよ。');
 
   const boardElRef = useRef<HTMLDivElement>(null);
+  const sellRef = useRef<HTMLDivElement>(null);
 
   // ---- 描画ループが参照する最新値（refミラー） ----
   const phaseRef = useRef(phase);
@@ -268,6 +223,11 @@ export default function GamePage() {
   const waveRef = useRef(wave);
   const speedRef = useRef(speed);
   const hpRef = useRef(hp);
+  const gaugeRef = useRef(gauge);
+  const killsRef = useRef(0);
+  const damageRef = useRef(0);
+  const difficultyRef = useRef(difficulty);
+  const freezeUntilRef = useRef(0);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0 });
   const enemiesRef = useRef<Enemy[]>([]);
   const beamsRef = useRef<Beam[]>([]);
@@ -280,6 +240,69 @@ export default function GamePage() {
   useEffect(() => void (waveRef.current = wave), [wave]);
   useEffect(() => void (speedRef.current = speed), [speed]);
   useEffect(() => void (hpRef.current = hp), [hp]);
+  useEffect(() => void (gaugeRef.current = gauge), [gauge]);
+  useEffect(() => void (difficultyRef.current = difficulty), [difficulty]);
+
+  /* ----- 保存値の読み込み ----- */
+  useEffect(() => {
+    try {
+      const b = Number(window.localStorage.getItem(BEST_KEY) || '0');
+      if (b > 0) setBest(b);
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  const recordBest = useCallback((reached: number) => {
+    setBest((prev) => {
+      if (reached <= prev) return prev;
+      try {
+        window.localStorage.setItem(BEST_KEY, String(reached));
+      } catch {
+        /* noop */
+      }
+      return reached;
+    });
+  }, []);
+
+  /* ----- 走行終了：履歴保存・実績判定 ----- */
+  const finishRun = useCallback(
+    (won: boolean) => {
+      const finalWave = won ? TOTAL_WAVES : Math.max(0, waveRef.current - 1);
+      const rec: RunRecord = { wave: finalWave, kills: killsRef.current, damage: damageRef.current, won, ts: Date.now() };
+      let prevRuns: RunRecord[] = [];
+      try {
+        prevRuns = parseRuns(window.localStorage.getItem(RUNS_KEY));
+      } catch {
+        /* noop */
+      }
+      const all = [rec, ...prevRuns];
+      try {
+        window.localStorage.setItem(RUNS_KEY, serializeRuns(all));
+      } catch {
+        /* noop */
+      }
+      const stats = aggregate(all);
+      recordBest(stats.bestWave);
+      const unlocked = evaluateAchievements(stats);
+      let prevAch: string[] = [];
+      try {
+        const p: unknown = JSON.parse(window.localStorage.getItem(ACH_KEY) || '[]');
+        if (Array.isArray(p)) prevAch = p.filter((x): x is string => typeof x === 'string');
+      } catch {
+        /* noop */
+      }
+      const prevSet = new Set(prevAch);
+      const fresh = unlocked.filter((id) => !prevSet.has(id));
+      try {
+        window.localStorage.setItem(ACH_KEY, JSON.stringify(unlocked));
+      } catch {
+        /* noop */
+      }
+      setNewAch(fresh.map((id) => ACHIEVEMENTS.find((a) => a.id === id)?.title).filter((t): t is string => Boolean(t)));
+    },
+    [recordBest],
+  );
 
   /* ----- 被弾フラッシュの自動解除 ----- */
   useEffect(() => {
@@ -303,33 +326,24 @@ export default function GamePage() {
     };
   }, []);
 
-  /* ----- 派生: 射程ハイライト（盤上器具の到達セル） ----- */
+  /* ----- 射程ハイライト ----- */
   const rangeCells = useMemo(() => {
     const set = new Set<string>();
-    const bonus = 0; // 表示は基礎射程ベース（戦闘中の補正は内部のみ）
     for (const [k, u] of Object.entries(board)) {
       const [ur, uc] = k.split(',').map(Number);
-      const rng = TYPES[u.type].range + bonus;
-      for (let r = 0; r < GRID; r++) {
-        for (let c = 0; c < GRID; c++) {
-          if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
-        }
-      }
+      const rng = TYPES[u.type].range;
+      for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
     }
     return set;
   }, [board]);
 
   const hoverRangeCells = useMemo(() => {
-    // ドラッグ中／ホバー対象の射程だけを強めに光らせる用（単一対象）
     const d = drag;
     if (!d || !d.hover) return null;
-    const u = d.unit;
     const { r: ur, c: uc } = d.hover;
-    const rng = TYPES[u.type].range;
+    const rng = TYPES[d.unit.type].range;
     const set = new Set<string>();
-    for (let r = 0; r < GRID; r++)
-      for (let c = 0; c < GRID; c++)
-        if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
+    for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
     return set;
   }, [drag]);
 
@@ -352,7 +366,8 @@ export default function GamePage() {
 
   const onUnitPointerDown = useCallback(
     (e: React.PointerEvent, source: 'offer' | 'board', unit: Unit, offerIndex?: number, cellKey?: string) => {
-      if (phaseRef.current === 'gameover' || phaseRef.current === 'victory' || phaseRef.current === 'cardpick') return;
+      const p = phaseRef.current;
+      if (p === 'gameover' || p === 'victory' || p === 'cardpick') return;
       e.preventDefault();
       e.stopPropagation();
       try {
@@ -360,7 +375,7 @@ export default function GamePage() {
       } catch {
         /* noop */
       }
-      setDrag({ source, offerIndex, cellKey, unit, x: e.clientX, y: e.clientY, hover: cellFromPoint(e.clientX, e.clientY) });
+      setDrag({ source, offerIndex, cellKey, unit, x: e.clientX, y: e.clientY, hover: cellFromPoint(e.clientX, e.clientY), overSell: false });
     },
     [cellFromPoint],
   );
@@ -370,7 +385,8 @@ export default function GamePage() {
       if (!dragRef.current) return;
       e.preventDefault();
       const hover = cellFromPoint(e.clientX, e.clientY);
-      setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, hover } : d));
+      const overSell = dragRef.current.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY);
+      setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, hover, overSell } : d));
     },
     [cellFromPoint],
   );
@@ -380,8 +396,23 @@ export default function GamePage() {
       const d = dragRef.current;
       if (!d) return;
       e.preventDefault();
-      const cell = cellFromPoint(e.clientX, e.clientY);
       setDrag(null);
+
+      if (d.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY)) {
+        const refund = sellValue(d.unit.level);
+        setBoard((prev) => {
+          if (!d.cellKey) return prev;
+          const next = { ...prev };
+          delete next[d.cellKey];
+          return next;
+        });
+        setGold((g) => g + refund);
+        playSfx('place');
+        setStatus(`${TYPES[d.unit.type].name} を器具庫へ戻した。+${refund}G。`);
+        return;
+      }
+
+      const cell = cellFromPoint(e.clientX, e.clientY);
       if (!cell) {
         setStatus('盤の外。器具は元の場所へ戻った。');
         return;
@@ -392,31 +423,29 @@ export default function GamePage() {
       const occ = boardRef.current[targetKey];
       let kind: 'place' | 'merge' | 'invalid';
       if (!occ) kind = 'place';
-      else if (occ.type === d.unit.type && occ.level === d.unit.level && occ.level < MAX_LV) kind = 'merge';
+      else if (canMerge(occ, d.unit)) kind = 'merge';
       else kind = 'invalid';
 
       if (kind === 'invalid') {
-        setStatus(occ ? '同じ器具・同レベルでないと融合できない。' : '');
+        setStatus('同じ器具・同レベルでないと融合できない。');
         return;
       }
 
       setBoard((prev) => {
         const next: Board = { ...prev };
-        if (kind === 'merge') {
-          next[targetKey] = makeUnit(d.unit.type, (occ as Unit).level + 1);
-        } else {
-          next[targetKey] = d.source === 'board' ? d.unit : makeUnit(d.unit.type, d.unit.level);
-        }
+        if (kind === 'merge') next[targetKey] = makeUnit(d.unit.type, (occ as Unit).level + 1);
+        else next[targetKey] = d.source === 'board' ? d.unit : makeUnit(d.unit.type, d.unit.level);
         if (d.source === 'board' && d.cellKey) delete next[d.cellKey];
         return next;
       });
-      if (d.source === 'offer' && d.offerIndex != null) {
-        setOffers((prev) => prev.map((o, i) => (i === d.offerIndex ? null : o)));
-      }
+      if (d.source === 'offer' && d.offerIndex != null) setOffers((prev) => prev.map((o, i) => (i === d.offerIndex ? null : o)));
       if (kind === 'merge') {
         pushFx(pctX(cell.c), pctY(cell.r));
+        playSfx('merge');
+        vibrate('merge');
         setStatus(`${TYPES[d.unit.type].name} を融合し Lv${(occ as Unit).level + 1} へ昇格。`);
       } else {
+        playSfx('place');
         setStatus(`${TYPES[d.unit.type].name} を据えた。`);
       }
     },
@@ -424,19 +453,22 @@ export default function GamePage() {
   );
 
   /* ----- 更新（オファー再抽選） ----- */
+  const curRerollCost = rerollCost(REROLL_COST, rerolls);
   const reroll = useCallback(() => {
     if (phase === 'combat') return;
-    if (gold < REROLL_COST) {
+    const cost = rerollCost(REROLL_COST, rerolls);
+    if (gold < cost) {
       setStatus('更新の対価が足りない。歪みを討ってゴールドを得よ。');
       return;
     }
-    setGold((g) => g - REROLL_COST);
+    setGold((g) => g - cost);
+    setRerolls((r) => r + 1);
     setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
+    playSfx('place');
     setStatus('器具棚を組み直した。');
-  }, [phase, gold]);
+  }, [phase, gold, rerolls]);
 
   const summonFree = useCallback(() => {
-    // 空きオファーを無償で1つ補充（最初の手詰まり防止）
     setOffers((prev) => {
       const i = prev.findIndex((o) => o === null);
       if (i < 0) return prev;
@@ -453,40 +485,25 @@ export default function GamePage() {
       setStatus('盤に器具が無い。まず器具を据えてから出撃せよ。');
       return;
     }
-    const w = wave;
-    const boss = w % 5 === 0;
-    const count = 6 + Math.floor(w * 1.5);
-    const baseHp = 10 + w * 6;
-    const power = 4 + Math.floor(w / 2);
-    const list: Enemy[] = Array.from({ length: count }, (_, i) => ({
-      id: nextId('e'),
-      pos: -1 - i * 1.25,
-      hp: baseHp,
-      maxHp: baseHp,
-      power,
-      speed: 1.5 + w * 0.02,
-    }));
-    if (boss) {
-      list.push({
-        id: nextId('e'),
-        pos: -1 - count * 1.25 - 1.5,
-        hp: baseHp * 10,
-        maxHp: baseHp * 10,
-        power: power * 3,
-        speed: 1.0,
-        boss: true,
-      });
-    }
+    const mode = difficultyRef.current;
+    let acc = -1;
+    const list: Enemy[] = composeWave(wave).map((s) => {
+      acc -= s.kind === 'boss' ? 1.6 : 1.2;
+      const eh = scaledEnemyHp(s.hp, mode);
+      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: scaledEnemyPower(s.power, mode), speed: s.speed, kind: s.kind };
+    });
     enemiesRef.current = list;
     beamsRef.current = [];
     popupsRef.current = [];
     cdRef.current = new Map();
+    freezeUntilRef.current = 0;
     setEnemies(list);
     setBeams([]);
     setPopups([]);
     setDrag(null);
     setPhase('combat');
-    setStatus(boss ? `第 ${w} 波 — 巨大な歪みが顕現する。` : `第 ${w} 波 — 歪みが観測網へ侵入する。`);
+    playSfx('wave');
+    setStatus(wave % 5 === 0 ? `第 ${wave} 波 — 巨大な歪みが顕現する。` : `第 ${wave} 波 — 歪みが観測網へ侵入する。`);
   }, [phase, wave]);
 
   /* ----- 戦闘ループ ----- */
@@ -504,48 +521,57 @@ export default function GamePage() {
       const board0 = boardRef.current;
       const beamArr = beamsRef.current;
       const popArr = popupsRef.current;
+      const frozen = now < freezeUntilRef.current;
 
       let hpNow = hpRef.current;
+      let gNow = gaugeRef.current;
       let killAdd = 0;
       let dmgAdd = 0;
       let goldAdd = 0;
 
-      // --- 歪みの移動・到達処理 ---
+      // 歪みの移動・到達（時間停止中は静止）
       const alive: Enemy[] = [];
       for (const e of enemiesRef.current) {
+        if (frozen) {
+          alive.push(e);
+          continue;
+        }
         const pos = e.pos + e.speed * dt;
         if (pos >= PATH.length) {
           hpNow -= e.power;
           popArr.push({ id: nextId('p'), x: 50, y: 99, value: e.power, kind: 'hurt', born: now });
           setHurt(true);
+          playSfx('hurt');
+          vibrate('hurt');
           continue;
         }
         alive.push({ ...e, pos });
       }
 
-      // --- 器具の照準・発射 ---
+      // 器具の照準・発射
       for (const [k, u] of Object.entries(board0)) {
         const [ur, uc] = k.split(',').map(Number);
         let cd = (cds.get(u.uid) ?? 0) - dt * 1000;
         if (cd <= 0) {
           const rng = TYPES[u.type].range + mod.rangeBonus;
           let target: Enemy | null = null;
-          let best = Infinity;
+          let bestPos = Infinity;
           let tc = { r: 0, c: 0 };
           for (const e of alive) {
             if (e.pos < 0 || e.hp <= 0) continue;
             const ec = enemyCell(e.pos);
             const dist = Math.hypot(ec.r - ur, ec.c - uc);
-            if (dist <= rng && e.pos < best) {
-              best = e.pos; // 先頭（最も進んだ）を狙う
+            if (dist <= rng && e.pos < bestPos) {
+              bestPos = e.pos;
               target = e;
               tc = ec;
             }
           }
           if (target) {
-            const dmg = Math.round(unitAtk(u) * mod.atkMul);
+            const dmg = Math.round(unitAtk(u.type, u.level) * mod.atkMul);
             target.hp -= dmg;
             dmgAdd += dmg;
+            gNow = addGauge(gNow, dmg);
             beamArr.push({ id: nextId('b'), x1: pctX(uc), y1: pctY(ur), x2: pctX(tc.c), y2: pctY(tc.r), born: now });
             popArr.push({ id: nextId('p'), x: pctX(tc.c), y: pctY(tc.r), value: dmg, kind: 'hit', born: now });
             cd = TYPES[u.type].fireMs * mod.fireMul;
@@ -554,12 +580,12 @@ export default function GamePage() {
         cds.set(u.uid, cd);
       }
 
-      // --- 撃破判定 ---
+      // 撃破判定
       const survivors: Enemy[] = [];
       for (const e of alive) {
         if (e.hp <= 0) {
           killAdd += 1;
-          goldAdd += e.boss ? 12 : 1;
+          goldAdd += e.kind === 'boss' ? 12 : 1;
         } else survivors.push(e);
       }
 
@@ -571,25 +597,36 @@ export default function GamePage() {
       beamsRef.current = liveBeams;
       popupsRef.current = livePops;
       hpRef.current = hpNow;
+      gaugeRef.current = gNow;
+      killsRef.current += killAdd;
+      damageRef.current += dmgAdd;
 
       setEnemies(survivors);
       setBeams(liveBeams.slice());
       setPopups(livePops.slice());
       setHp(hpNow);
+      setGauge(gNow);
       if (killAdd) setKills((k) => k + killAdd);
       if (dmgAdd) setDamage((d) => d + dmgAdd);
       if (goldAdd) setGold((g) => g + goldAdd);
 
       if (hpNow <= 0) {
+        playSfx('gameover');
+        vibrate('gameover');
+        finishRun(false);
         setPhase('gameover');
         setStatus('観測網は綻び、観測官は座標を見失った——。');
         return;
       }
       if (survivors.length === 0) {
         const cleared = waveRef.current;
-        const bonus = 5 + cleared;
+        const bonus = waveReward(cleared, difficultyRef.current);
         setGold((g) => g + bonus);
+        recordBest(cleared);
+        playSfx('wave');
         if (cleared >= TOTAL_WAVES) {
+          playSfx('ultimate');
+          finishRun(true);
           setPhase('victory');
           setStatus('全 20 波を退けた。世界の座標は調律された。');
           return;
@@ -603,7 +640,54 @@ export default function GamePage() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [phase]);
+  }, [phase, recordBest, finishRun]);
+
+  /* ----- アルティメット ----- */
+  const triggerUlt = useCallback(
+    (id: UltId) => {
+      if (phaseRef.current !== 'combat' || !isReady(gaugeRef.current)) return;
+      playSfx('ultimate');
+      vibrate('ultimate');
+      const now = performance.now();
+      if (id === 'mend') {
+        const nh = Math.min(maxHp, hpRef.current + MEND_HP);
+        hpRef.current = nh;
+        setHp(nh);
+      } else if (id === 'freeze') {
+        freezeUntilRef.current = now + FREEZE_MS;
+      } else {
+        let k = 0;
+        let g = 0;
+        let d = 0;
+        const survivors: Enemy[] = [];
+        for (const e of enemiesRef.current) {
+          if (e.pos < 0) {
+            survivors.push(e);
+            continue;
+          }
+          const nh = e.hp - NOVA_DAMAGE;
+          const cell = enemyCell(e.pos);
+          popupsRef.current.push({ id: nextId('p'), x: pctX(cell.c), y: pctY(cell.r), value: NOVA_DAMAGE, kind: 'hit', born: now });
+          d += NOVA_DAMAGE;
+          if (nh <= 0) {
+            k += 1;
+            g += e.kind === 'boss' ? 12 : 1;
+          } else survivors.push({ ...e, hp: nh });
+        }
+        enemiesRef.current = survivors;
+        setEnemies(survivors);
+        setPopups(popupsRef.current.slice());
+        killsRef.current += k;
+        damageRef.current += d;
+        if (k) setKills((x) => x + k);
+        if (g) setGold((x) => x + g);
+        if (d) setDamage((x) => x + d);
+      }
+      gaugeRef.current = 0;
+      setGauge(0);
+    },
+    [maxHp],
+  );
 
   /* ----- カード選択 ----- */
   const chooseCard = useCallback(
@@ -642,6 +726,7 @@ export default function GamePage() {
           break;
       }
       summonFree();
+      setRerolls(0);
       setWave((w) => w + 1);
       setPhase('prep');
       setStatus('盤を整え、次の歪みを迎え撃て。');
@@ -649,32 +734,59 @@ export default function GamePage() {
     [summonFree],
   );
 
-  /* ----- リスタート ----- */
-  const restart = useCallback(() => {
+  /* ----- 走行開始（難易度確定） ----- */
+  const beginRun = useCallback((mode: Difficulty) => {
+    setDifficulty(mode);
+    difficultyRef.current = mode;
     modRef.current = { atkMul: 1, fireMul: 1, rangeBonus: 0 };
     cdRef.current = new Map();
     enemiesRef.current = [];
     beamsRef.current = [];
     popupsRef.current = [];
     hpRef.current = MAX_HP;
+    gaugeRef.current = 0;
+    killsRef.current = 0;
+    damageRef.current = 0;
+    freezeUntilRef.current = 0;
+    setIntro(false);
     setPhase('prep');
     setWave(1);
-    setGold(0);
+    setGold(DIFFICULTIES[mode].startGold);
     setHp(MAX_HP);
     setMaxHp(MAX_HP);
     setKills(0);
     setDamage(0);
+    setGauge(0);
+    setRerolls(0);
     setSpeed(1);
+    setNewAch([]);
     setBoard({});
     setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
     setEnemies([]);
     setBeams([]);
     setPopups([]);
     setCards([]);
-    setStatus('観測網を張り直した。器具を整え、再び歪みを迎え撃て。');
+    setStatus('器具を盤へ運び、同じものを重ねて融合せよ。');
+  }, []);
+
+  const restart = useCallback(() => {
+    setPhase('prep');
+    setIntro(true);
+    setNewAch([]);
+    setStatus('難易度を選び、再び歪みを迎え撃て。');
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setMutedState((m) => {
+      const nm = !m;
+      setSfxMuted(nm);
+      return nm;
+    });
   }, []);
 
   const combat = phase === 'combat';
+  const draggingBoard = drag?.source === 'board';
+  const ultReady = isReady(gauge);
 
   /* ========================================================================
    * 描画
@@ -692,10 +804,11 @@ export default function GamePage() {
           @keyframes gsAura  { 0%,100%{opacity:.32} 50%{opacity:.8} }
           @keyframes gsTwinkle { 0%,100%{opacity:.3} 50%{opacity:1} }
           @keyframes gsRise  { 0%{opacity:0; transform:translate(-50%,-50%) scale(.7)} 18%{opacity:1} 100%{opacity:0; transform:translate(-50%,-180%) scale(1.1)} }
-          @keyframes gsEnemy { 0%,100%{box-shadow:0 0 6px rgba(199,82,74,.6)} 50%{box-shadow:0 0 14px rgba(232,96,108,.95)} }
+          @keyframes gsEnemy { 0%,100%{filter:brightness(1)} 50%{filter:brightness(1.25)} }
           @keyframes gsFxBurst { 0%{opacity:0; transform:translate(-50%,-50%) scale(.3)} 30%{opacity:1} 100%{opacity:0; transform:translate(-50%,-50%) scale(2.1)} }
           @keyframes gsHurt  { 0%,100%{box-shadow:0 0 14px rgba(205,167,54,.3)} 50%{box-shadow:0 0 26px rgba(244,63,94,.9), inset 0 0 14px rgba(244,63,94,.5)} }
           @keyframes gsCard  { from{opacity:0; transform:translateY(14px) scale(.96)} to{opacity:1; transform:translateY(0) scale(1)} }
+          @keyframes gsReady { 0%,100%{box-shadow:0 0 0 0 rgba(205,167,54,.0)} 50%{box-shadow:0 0 16px 1px rgba(205,167,54,.6)} }
           .gs-rose   { animation: gsRoseSpin 260s linear infinite; }
           .gs-aura   { animation: gsAura 1.7s ease-in-out infinite; }
           .gs-twinkle{ animation: gsTwinkle 2.2s ease-in-out infinite; }
@@ -704,6 +817,7 @@ export default function GamePage() {
           .gs-fx     { animation: gsFxBurst .5s ease-out forwards; }
           .gs-hurt   { animation: gsHurt .22s ease-out; }
           .gs-card   { animation: gsCard .32s var(--ease-out, ease-out) both; }
+          .gs-ready  { animation: gsReady 1.2s ease-in-out infinite; }
         `,
         }}
       />
@@ -711,53 +825,38 @@ export default function GamePage() {
       <div className="flex h-full w-full max-w-[440px] flex-col px-3 pb-2 pt-2">
         {/* ===================== 上部 HUD ===================== */}
         <header className="flex-shrink-0">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate font-display text-[10px] uppercase tracking-[0.32em] text-amber-400/80">GRID STELLA</p>
-              <p className="truncate font-ritual text-[11px] tracking-[0.14em] text-amber-200/60">方位観察官の天体調律盤</p>
+              <p className="truncate font-ritual text-[11px] tracking-[0.14em] text-amber-200/60">方位観察官の天体調律盤 ・ {DIFFICULTIES[difficulty].label}</p>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-shrink-0 items-center gap-1.5">
               <Pill icon="🧭" value={`${gold}`} accent />
               <Pill icon="✦" value={`${wave}/${TOTAL_WAVES}`} />
               <Pill icon="⚔" value={kills >= 1000 ? `${(kills / 1000).toFixed(1)}K` : `${kills}`} />
+              <button type="button" onClick={toggleMute} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="mute">
+                {muted ? '🔇' : '🔊'}
+              </button>
             </div>
           </div>
 
-          {/* HP バー */}
           <div className="mt-2 flex items-center gap-2">
             <span className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-amber-400/60 bg-amber-900/30 font-display text-[11px] text-amber-200 ${hurt ? 'gs-hurt' : ''}`}>観</span>
             <div className="h-2.5 flex-1 overflow-hidden rounded-full border border-amber-700/30 bg-neutral-900">
-              <div
-                className={`h-full rounded-full transition-[width] duration-200 ease-out ${hp <= maxHp * 0.3 ? 'bg-gradient-to-r from-rose-600 to-rose-400' : 'bg-gradient-to-r from-amber-500 to-amber-300'}`}
-                style={{ width: `${(hp / maxHp) * 100}%` }}
-              />
+              <div className={`h-full rounded-full transition-[width] duration-200 ease-out ${hp <= maxHp * 0.3 ? 'bg-gradient-to-r from-rose-600 to-rose-400' : 'bg-gradient-to-r from-amber-500 to-amber-300'}`} style={{ width: `${(hp / maxHp) * 100}%` }} />
             </div>
-            <span className="w-16 flex-shrink-0 text-right font-mono text-[11px] tabular-nums text-stone-300">
-              {hp}/{maxHp}
-            </span>
+            <span className="w-16 flex-shrink-0 text-right font-mono text-[11px] tabular-nums text-stone-300">{hp}/{maxHp}</span>
           </div>
         </header>
 
         {/* ===================== 盤（マージ盤＝戦場） ===================== */}
         <div className="flex min-h-0 flex-1 items-center justify-center py-2">
-          <div
-            ref={boardElRef}
-            className="relative aspect-square w-[min(92vw,calc(100dvh-272px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]"
-            style={{ touchAction: 'none' }}
-          >
+          <div ref={boardElRef} className="relative aspect-square w-[min(92vw,calc(100dvh-310px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
             <BoardBackdrop />
 
-            {/* 経路（戦闘中のみ） */}
             {combat && (
               <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                <polyline
-                  points={PATH.map((p) => `${pctX(p.c)},${pctY(p.r)}`).join(' ')}
-                  fill="none"
-                  stroke="rgba(199,82,74,0.30)"
-                  strokeWidth={1.2}
-                  strokeDasharray="2 4"
-                  strokeLinecap="round"
-                />
+                <polyline points={PATH.map((p) => `${pctX(p.c)},${pctY(p.r)}`).join(' ')} fill="none" stroke="rgba(199,82,74,0.30)" strokeWidth={1.2} strokeDasharray="2 4" strokeLinecap="round" />
               </svg>
             )}
 
@@ -772,7 +871,7 @@ export default function GamePage() {
               let hl = '';
               if (isHoverCell && drag) {
                 const occ = board[k];
-                const ok = !occ || (occ.type === drag.unit.type && occ.level === drag.unit.level && occ.level < MAX_LV);
+                const ok = !occ || canMerge(occ, drag.unit);
                 hl = ok
                   ? 'border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_16px_rgba(52,211,153,0.4),inset_0_0_12px_rgba(52,211,153,0.25)]'
                   : 'border-rose-500/80 bg-rose-500/10 shadow-[0_0_16px_rgba(244,63,94,0.4),inset_0_0_12px_rgba(244,63,94,0.25)]';
@@ -792,17 +891,8 @@ export default function GamePage() {
               const dragging = drag?.source === 'board' && drag.cellKey === k;
               const def = TYPES[u.type];
               return (
-                <div
-                  key={u.uid}
-                  onPointerDown={(e) => onUnitPointerDown(e, 'board', u, undefined, k)}
-                  onPointerMove={onUnitPointerMove}
-                  onPointerUp={onUnitPointerUp}
-                  className="absolute p-[1.5%]"
-                  style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%', touchAction: 'none', zIndex: 10 }}
-                >
-                  <div
-                    className={`group relative flex h-full w-full flex-col items-center justify-center rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} ${dragging ? 'opacity-30' : 'opacity-100'} cursor-grab shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95`}
-                  >
+                <div key={u.uid} onPointerDown={(e) => onUnitPointerDown(e, 'board', u, undefined, k)} onPointerMove={onUnitPointerMove} onPointerUp={onUnitPointerUp} className="absolute p-[1.5%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%', touchAction: 'none', zIndex: 10 }}>
+                  <div className={`group relative flex h-full w-full flex-col items-center justify-center rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} ${dragging ? 'opacity-30' : 'opacity-100'} cursor-grab shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95`}>
                     <span className="text-[clamp(18px,6.2vw,30px)] leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{def.emoji}</span>
                     <span className="absolute right-0.5 top-0.5 rounded-sm bg-neutral-950/70 px-1 font-mono text-[8px] font-bold leading-tight text-amber-300">L{u.level}</span>
                   </div>
@@ -824,15 +914,15 @@ export default function GamePage() {
               if (e.pos < 0) return null;
               const cell = enemyCell(e.pos);
               const ratio = Math.max(0, e.hp / e.maxHp);
-              const size = e.boss ? 13 : 8;
+              const boss = e.kind === 'boss';
+              const sizeVw = kindSizeVw(e.kind);
+              const maxPx = boss ? 56 : 36;
               return (
                 <div key={e.id} className="pointer-events-none absolute" style={{ left: `${pctX(cell.c)}%`, top: `${pctY(cell.r)}%`, transform: 'translate(-50%,-50%)', zIndex: 18 }}>
-                  <div className="gs-enemy flex items-center justify-center rounded-full border border-rose-400/60 bg-gradient-to-b from-rose-950/90 to-neutral-950/95" style={{ width: `${size}vw`, maxWidth: e.boss ? 56 : 34, aspectRatio: '1' }}>
-                    <span className="text-rose-200" style={{ fontSize: e.boss ? '1.4rem' : '0.85rem' }}>
-                      {e.boss ? '🌑' : '👁'}
-                    </span>
+                  <div className={`gs-enemy flex items-center justify-center rounded-full border bg-gradient-to-b from-neutral-900/90 to-neutral-950/95 ${kindRing(e.kind)}`} style={{ width: `${sizeVw}vw`, maxWidth: maxPx, aspectRatio: '1', boxShadow: '0 0 10px rgba(0,0,0,0.5)' }}>
+                    <span style={{ fontSize: boss ? '1.4rem' : '0.9rem' }}>{kindEmoji(e.kind)}</span>
                   </div>
-                  <div className="mx-auto mt-0.5 h-0.5 overflow-hidden rounded-full bg-neutral-800" style={{ width: `${size}vw`, maxWidth: e.boss ? 56 : 34 }}>
+                  <div className="mx-auto mt-0.5 h-0.5 overflow-hidden rounded-full bg-neutral-800" style={{ width: `${sizeVw}vw`, maxWidth: maxPx }}>
                     <div className="h-full rounded-full bg-gradient-to-r from-rose-500 to-rose-300" style={{ width: `${ratio * 100}%` }} />
                   </div>
                 </div>
@@ -841,43 +931,57 @@ export default function GamePage() {
 
             {/* ダメージ表示 */}
             {popups.map((p) => (
-              <span
-                key={p.id}
-                className={`gs-rise pointer-events-none absolute font-mono text-[11px] font-bold tabular-nums ${p.kind === 'hit' ? 'text-amber-200 drop-shadow-[0_0_5px_rgba(205,167,54,0.9)]' : 'text-rose-300 drop-shadow-[0_0_5px_rgba(244,63,94,0.9)]'}`}
-                style={{ left: `${p.x}%`, top: `${p.y}%`, zIndex: 22 }}
-              >
+              <span key={p.id} className={`gs-rise pointer-events-none absolute font-mono text-[11px] font-bold tabular-nums ${p.kind === 'hit' ? 'text-amber-200 drop-shadow-[0_0_5px_rgba(205,167,54,0.9)]' : 'text-rose-300 drop-shadow-[0_0_5px_rgba(244,63,94,0.9)]'}`} style={{ left: `${p.x}%`, top: `${p.y}%`, zIndex: 22 }}>
                 {p.kind === 'hit' ? `-${p.value}` : `-${p.value}♥`}
               </span>
             ))}
 
             {/* 融合エフェクト */}
             {fx.map((f) => (
-              <span key={f.id} className="gs-fx pointer-events-none absolute text-2xl text-amber-200 drop-shadow-[0_0_10px_rgba(205,167,54,1)]" style={{ left: `${f.x}%`, top: `${f.y}%`, zIndex: 24 }}>
-                ✦
-              </span>
+              <span key={f.id} className="gs-fx pointer-events-none absolute text-2xl text-amber-200 drop-shadow-[0_0_10px_rgba(205,167,54,1)]" style={{ left: `${f.x}%`, top: `${f.y}%`, zIndex: 24 }}>✦</span>
             ))}
 
-            {/* 戦闘中ミニ情報 */}
             {combat && (
               <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-neutral-950/60 px-2 py-1 font-mono text-[10px] text-amber-300/80" style={{ zIndex: 26 }}>
-                残 {enemies.length} ・ {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} dmg
+                残 {enemies.length} ・ {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} dmg{performance.now() < freezeUntilRef.current ? ' ・ ❄停止' : ''}
               </div>
             )}
 
-            {/* ===== オーバーレイ（カード選択 / 決着） ===== */}
+            {/* 売却ゾーン */}
+            {draggingBoard && (
+              <div ref={sellRef} className={`pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-4 py-2 font-display text-[11px] uppercase tracking-[0.16em] transition-all duration-150 ${drag?.overSell ? 'border-rose-300/80 bg-rose-500/25 text-rose-100 shadow-[0_0_22px_rgba(244,63,94,0.5)]' : 'border-amber-500/40 bg-neutral-950/80 text-amber-200/80'}`} style={{ zIndex: 30 }}>
+                ♻ 売却 <span className="font-mono">+{sellValue(drag?.unit.level ?? 1)}G</span>
+              </div>
+            )}
+
+            {/* ===== 導入（難易度選択＋遊びかた） ===== */}
+            {intro && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/92 px-5 text-center backdrop-blur-sm" style={{ zIndex: 50 }}>
+                <p className="gs-eyebrow text-amber-300/80">How to Attune</p>
+                <p className="font-display text-lg tracking-wide text-stone-100">難易度を選ぶ</p>
+                <div className="flex w-full gap-2">
+                  {DIFFICULTY_LIST.map((d) => (
+                    <button key={d.id} type="button" onClick={() => beginRun(d.id)} className="flex flex-1 flex-col items-center gap-1 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_20px_rgba(205,167,54,0.35)] active:scale-95">
+                      <span className="font-ritual text-[13px] tracking-wide text-amber-100">{d.label}</span>
+                      <span className="text-center font-ritual text-[9px] leading-tight text-stone-400">{d.desc}</span>
+                    </button>
+                  ))}
+                </div>
+                <ul className="mt-1 space-y-1 font-ritual text-[11px] leading-relaxed text-stone-300">
+                  <li>① 下の器具を盤へドラッグ ② 同種・同Lvを重ねて融合</li>
+                  <li>③ 出撃で自動射撃 ④ 観測官HPが0で陥落</li>
+                  <li>⑤ 波クリアで星位カード ⑥ ゲージ満タンで必殺</li>
+                </ul>
+              </div>
+            )}
+
             {phase === 'cardpick' && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/85 px-3 backdrop-blur-sm" style={{ zIndex: 40 }}>
                 <p className="gs-eyebrow text-amber-300/80">Blessing of the Stars</p>
                 <p className="font-display text-base tracking-wide text-stone-100">星位の祝福を選べ</p>
                 <div className="flex w-full items-stretch justify-center gap-2">
                   {cards.map((card, i) => (
-                    <button
-                      key={card.id}
-                      type="button"
-                      onClick={() => chooseCard(card)}
-                      className="gs-card group flex flex-1 flex-col items-center gap-1.5 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-1 hover:border-amber-300/70 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)]"
-                      style={{ animationDelay: `${i * 60}ms` }}
-                    >
+                    <button key={card.id} type="button" onClick={() => chooseCard(card)} className="gs-card group flex flex-1 flex-col items-center gap-1.5 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-1 hover:border-amber-300/70 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)]" style={{ animationDelay: `${i * 60}ms` }}>
                       <span className="text-2xl drop-shadow-[0_0_8px_rgba(205,167,54,0.6)] transition-transform duration-300 group-hover:scale-110">{card.icon}</span>
                       <span className="font-ritual text-[12px] tracking-wide text-amber-100">{card.title}</span>
                       <span className="text-center font-ritual text-[10px] leading-tight text-stone-400">{card.desc}</span>
@@ -888,12 +992,20 @@ export default function GamePage() {
             )}
 
             {(phase === 'gameover' || phase === 'victory') && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/85 px-4 backdrop-blur-sm" style={{ zIndex: 40 }}>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 rounded-xl bg-neutral-950/88 px-4 text-center backdrop-blur-sm" style={{ zIndex: 40 }}>
                 <p className={`gs-eyebrow ${phase === 'victory' ? 'text-amber-300/80' : 'text-rose-300/80'}`}>{phase === 'victory' ? 'Cosmos Attuned' : 'Observation Lost'}</p>
                 <p className="font-display text-2xl tracking-wide text-stone-100">{phase === 'victory' ? '調律、完了' : '観測網、陥落'}</p>
-                <p className="max-w-[16rem] text-center font-ritual text-xs leading-relaxed text-stone-400">
+                <p className="max-w-[16rem] font-ritual text-xs leading-relaxed text-stone-400">
                   {phase === 'victory' ? '全ての歪みは正された。星々は再び正しい座標に並ぶ。' : `第 ${wave} 波で観測網は破れた。撃破 ${kills} ・ 累計 ${damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage}。`}
                 </p>
+                <p className="font-mono text-[11px] text-amber-300/80">最高到達 第 {Math.max(best, phase === 'victory' ? TOTAL_WAVES : wave - 1)} 波</p>
+                {newAch.length > 0 && (
+                  <div className="flex max-w-[18rem] flex-wrap items-center justify-center gap-1">
+                    {newAch.map((t) => (
+                      <span key={t} className="rounded-full border border-amber-400/50 bg-amber-400/10 px-2 py-0.5 font-ritual text-[10px] text-amber-200">🏅 {t}</span>
+                    ))}
+                  </div>
+                )}
                 <button type="button" onClick={restart} className="mt-1 rounded-md border border-amber-400/60 bg-amber-400/10 px-6 py-2 font-display text-xs uppercase tracking-[0.16em] text-amber-100 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-amber-400/20 hover:shadow-[0_0_22px_rgba(205,167,54,0.4)]">
                   再観測する
                 </button>
@@ -904,63 +1016,65 @@ export default function GamePage() {
 
         {/* ===================== 下部トレイ ===================== */}
         <footer className="flex-shrink-0">
-          {/* オファー（器具棚） */}
-          <div className="mb-1.5 flex items-stretch gap-2">
-            {offers.map((u, i) => (
-              <div key={i} className="flex-1">
-                {u ? (
-                  <div
-                    onPointerDown={(e) => onUnitPointerDown(e, 'offer', u, i)}
-                    onPointerMove={onUnitPointerMove}
-                    onPointerUp={onUnitPointerUp}
-                    className={`relative flex h-[64px] cursor-grab select-none flex-col items-center justify-center rounded-lg border bg-gradient-to-b ${RARITY_FRAME[TYPES[u.type].rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95 ${drag?.source === 'offer' && drag.offerIndex === i ? 'opacity-30' : ''}`}
-                    style={{ touchAction: 'none' }}
-                  >
-                    <span className="text-2xl leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{TYPES[u.type].emoji}</span>
-                    <span className="mt-0.5 font-ritual text-[9px] tracking-wide text-amber-200/80">{TYPES[u.type].name}</span>
-                    <span className="absolute right-1 top-1 font-mono text-[8px] text-stone-500">{TYPES[u.type].note}</span>
-                  </div>
-                ) : (
-                  <div className="flex h-[64px] items-center justify-center rounded-lg border border-dashed border-amber-700/25 bg-neutral-950/40 font-mono text-[10px] text-stone-600">空</div>
-                )}
+          {/* 必殺ゲージ（戦闘中） */}
+          {combat && (
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="font-display text-[9px] uppercase tracking-[0.18em] text-amber-300/70">必殺</span>
+              <div className="h-2 flex-1 overflow-hidden rounded-full border border-amber-700/30 bg-neutral-900">
+                <div className={`h-full rounded-full bg-gradient-to-r from-amber-500 to-amber-200 transition-[width] duration-150 ${ultReady ? 'gs-ready' : ''}`} style={{ width: `${(gauge / GAUGE_MAX) * 100}%` }} />
               </div>
-            ))}
-          </div>
+            </div>
+          )}
+
+          {/* オファー（器具棚）／必殺ボタン */}
+          {!combat ? (
+            <div className="mb-1.5 flex items-stretch gap-2">
+              {offers.map((u, i) => (
+                <div key={i} className="flex-1">
+                  {u ? (
+                    <div onPointerDown={(e) => onUnitPointerDown(e, 'offer', u, i)} onPointerMove={onUnitPointerMove} onPointerUp={onUnitPointerUp} className={`relative flex h-[64px] cursor-grab select-none flex-col items-center justify-center rounded-lg border bg-gradient-to-b ${RARITY_FRAME[TYPES[u.type].rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95 ${drag?.source === 'offer' && drag.offerIndex === i ? 'opacity-30' : ''}`} style={{ touchAction: 'none' }}>
+                      <span className="text-2xl leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{TYPES[u.type].emoji}</span>
+                      <span className="mt-0.5 font-ritual text-[9px] tracking-wide text-amber-200/80">{TYPES[u.type].name}</span>
+                      <span className="absolute right-1 top-1 font-mono text-[8px] text-stone-500">{TYPES[u.type].note}</span>
+                    </div>
+                  ) : (
+                    <div className="flex h-[64px] items-center justify-center rounded-lg border border-dashed border-amber-700/25 bg-neutral-950/40 font-mono text-[10px] text-stone-600">空</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-1.5 flex items-stretch gap-2">
+              {ULT_LIST.map((u) => (
+                <button key={u.id} type="button" onClick={() => triggerUlt(u.id)} disabled={!ultReady} className={`flex h-[64px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border transition-all duration-200 ease-out active:scale-95 ${ultReady ? 'gs-ready border-amber-400/70 bg-gradient-to-b from-amber-900/40 to-neutral-950/80 text-amber-100 hover:-translate-y-0.5' : 'border-amber-700/25 bg-neutral-950/50 text-stone-600 opacity-60'}`}>
+                  <span className="text-xl leading-none">{u.icon}</span>
+                  <span className="font-ritual text-[10px] tracking-wide">{u.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* 操作ボタン */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={reroll}
-              disabled={combat || gold < REROLL_COST}
-              className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 font-display text-[11px] uppercase tracking-[0.14em] text-amber-200 transition-all duration-200 ease-out hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <span>⟳</span> 更新
-              <span className="font-mono text-[9px] text-amber-300/70">-{REROLL_COST}G</span>
+            <button type="button" onClick={reroll} disabled={combat || gold < curRerollCost} className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 font-display text-[11px] uppercase tracking-[0.14em] text-amber-200 transition-all duration-200 ease-out hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
+              <span>⟳</span> 更新 <span className="font-mono text-[9px] text-amber-300/70">-{curRerollCost}G</span>
             </button>
 
             {!combat ? (
-              <button
-                type="button"
-                onClick={startWave}
-                disabled={phase === 'cardpick' || phase === 'gameover' || phase === 'victory'}
-                className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
-              >
+              <button type="button" onClick={startWave} disabled={intro || phase === 'cardpick' || phase === 'gameover' || phase === 'victory'} className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
                 <span className="gs-twinkle text-amber-300">✦</span> 第 {wave} 波 出撃
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => setSpeed((s) => (s === 1 ? 2 : 1))}
-                className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/50 bg-amber-400/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:bg-amber-400/15 active:scale-95"
-              >
+              <button type="button" onClick={() => setSpeed((s) => (s === 1 ? 2 : 1))} className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/50 bg-amber-400/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:bg-amber-400/15 active:scale-95">
                 <span>⏩</span> {speed}x 速度
               </button>
             )}
           </div>
 
-          {/* ステータス行 */}
-          <p className="mt-1.5 h-4 truncate text-center font-ritual text-[10px] text-stone-500">{status}</p>
+          <p className="mt-1.5 flex h-4 items-center justify-center gap-2 text-center font-ritual text-[10px] text-stone-500">
+            <span className="truncate">{status}</span>
+            {best > 0 && <span className="flex-shrink-0 font-mono text-amber-300/60">最高 {best}波</span>}
+          </p>
         </footer>
       </div>
 
