@@ -2,27 +2,26 @@
 
 /* ============================================================================
  * GRID STELLA — 方位観察官の天体調律盤
- * 「ショップ ＆ バックパック整理画面」デザインモックアップ
+ * 「ショップ ＆ 観測盤」画面 ＋ ループ・ディフェンス戦闘
  *
  * 完全に自己完結した 1 ファイルのフロントエンド画面。外部ライブラリは一切使わ
  * ず、Next.js (App Router) のクライアントコンポーネントと Tailwind CSS のみで
  * 構成しています。コピー & ペーストでそのまま描画できます。
  *
- * 実装している視覚エフェクト:
- *   1. 星（⭐）のバフ範囲の発光 — 羅針盤などをドラッグ中／盤上でホバーすると、
- *      その器具を中心にバフ範囲がホタルのように淡く明滅して発光します。
- *   2. 配置プレビュー — ドラッグ中、配置可能なら枠線がエメラルド、枠外や衝突なら
- *      ローズに光ります。
- *   3. 回転アニメーション — ドラッグ中・選択中に R キーを押すと器具が滑らかに
- *      90 度回転し、占有マスもバフ発光範囲も連動して回転します。
- *
- * バトルや経済の本処理は意図的に省略した「見た目」のモックアップです。
+ * 主な要素:
+ *   1. 星（⭐）のバフ範囲の発光 — 器具をドラッグ中／盤上でホバー・選択すると、
+ *      バフ（＝攻撃）範囲がホタルのように淡く明滅して発光します。
+ *   2. 配置プレビュー — 配置可能ならマス枠がエメラルド、衝突や枠外ならローズに発光。
+ *   3. 回転 — ドラッグ中・選択中に R キーで器具・占有マス・バフ範囲が 90 度回転。
+ *   4. 戦闘（観測） — 「歪み」が観測盤の経路を縫うように下へ進み、器具のバフ範囲
+ *      （星の射程）を通過するたびに被弾。生き残って盤下の観測官へ到達すると観測官
+ *      の HP が減り、HP が 0 になると観測網は陥落（ゲームオーバー）します。
  * ========================================================================== */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /* ----------------------------------------------------------------------------
- * 盤面のジオメトリ定数（px）。チップとマス目を同一式で描画して整列を保証する。
+ * 盤面のジオメトリ定数（px）。チップ・マス目・敵・弾を同一式で配置して整列を保証。
  * -------------------------------------------------------------------------- */
 const BOARD_N = 5;
 const CELL = 76;
@@ -31,29 +30,49 @@ const PAD = 14;
 const BOARD_PX = PAD * 2 + BOARD_N * CELL + (BOARD_N - 1) * GAP;
 
 const cellOffset = (i: number) => PAD + i * (CELL + GAP);
+const cellCenter = (i: number) => cellOffset(i) + CELL / 2;
 const keyOf = (r: number, c: number) => r + ',' + c;
 const inBounds = (r: number, c: number) =>
   r >= 0 && r < BOARD_N && c >= 0 && c < BOARD_N;
+
+/* ----------------------------------------------------------------------------
+ * 戦闘の調整値
+ * -------------------------------------------------------------------------- */
+const OBSERVER_MAX_HP = 20;
+const CELLS_PER_SEC = 1.7; // 歪みの進行速度（マス/秒）
+const SPAWN_GAP = 1.35; // 歪み同士の間隔（マス分）
+const POPUP_MS = 850;
+
+// 観測盤を縫う進行経路（蛇行）。最上段の左から、段ごとに折り返して最下段へ。
+const PATH: { r: number; c: number }[] = (() => {
+  const cells: { r: number; c: number }[] = [];
+  for (let r = 0; r < BOARD_N; r++) {
+    const cols = r % 2 === 0 ? [0, 1, 2, 3, 4] : [4, 3, 2, 1, 0];
+    for (const c of cols) cells.push({ r, c });
+  }
+  return cells;
+})();
+const PATH_KEYS = new Set(PATH.map((p) => keyOf(p.r, p.c)));
 
 /* ----------------------------------------------------------------------------
  * 型
  * -------------------------------------------------------------------------- */
 type Rotation = 0 | 90 | 180 | 270;
 type Cell = readonly [number, number]; // [row, col] のアンカー相対オフセット
-
 type Rarity = 'common' | 'rare' | 'astral';
 
 interface ItemDef {
   id: string;
-  name: string; // 日本語名
-  reading: string; // ラテン銘（エングレーブ風ラベル）
+  name: string;
+  reading: string;
   emoji: string;
   price: number;
+  attack: number; // バフ範囲のマスを通過する歪みへ与える観測ダメージ
   rarity: Rarity;
-  footprint: Cell[]; // 占有マス（必ず [0,0] を含む）
-  buff: Cell[]; // バフ範囲（星の照らす先）
-  buffLabel: string; // バフの形の説明
-  flavor: string; // フレーバーテキスト
+  footprint: Cell[];
+  buff: Cell[]; // バフ（＝攻撃）範囲。星の照らす先。
+  buffLabel: string;
+  flavor: string;
 }
 
 interface PlacedItem {
@@ -66,13 +85,35 @@ interface PlacedItem {
 interface DragState {
   source: 'shop' | 'board';
   defId: string;
-  uid?: string; // 盤上から動かす場合の元チップ
-  slotId?: string; // ショップ枠から来た場合の枠 id
+  uid?: string;
+  slotId?: string;
   rotation: Rotation;
 }
 
+interface ShopSlot {
+  slotId: string;
+  defId: string;
+}
+
+interface Enemy {
+  id: string;
+  pos: number; // 経路上の連続位置（負＝盤外で待機中）
+  hp: number;
+  maxHp: number;
+  power: number; // 観測官へ到達した際の接触ダメージ
+}
+
+interface Popup {
+  id: string;
+  x: number;
+  y: number;
+  value: number;
+  kind: 'hit' | 'hurt';
+  born: number;
+}
+
 /* ----------------------------------------------------------------------------
- * 器具カタログ（観測器具）。footprint と buff は [行,列] のオフセット。
+ * 器具カタログ。footprint / buff は [行,列] のオフセット。buff は攻撃範囲を兼ねる。
  * -------------------------------------------------------------------------- */
 const CATALOG: ItemDef[] = [
   {
@@ -81,6 +122,7 @@ const CATALOG: ItemDef[] = [
     reading: 'COMPASS',
     emoji: '🧭',
     price: 4,
+    attack: 3,
     rarity: 'rare',
     footprint: [[0, 0]],
     buff: [
@@ -89,8 +131,8 @@ const CATALOG: ItemDef[] = [
       [0, -1],
       [0, 1],
     ],
-    buffLabel: '上下左右の四方を照らす',
-    flavor: '北を指す針が、隣り合う器具に方位の祝福を分け与える。',
+    buffLabel: '上下左右の四方を撃つ',
+    flavor: '北を指す針が、四方を通る歪みへ方位の罰を放つ。',
   },
   {
     id: 'needle',
@@ -98,14 +140,15 @@ const CATALOG: ItemDef[] = [
     reading: 'NEEDLE',
     emoji: '📌',
     price: 2,
+    attack: 5,
     rarity: 'common',
     footprint: [[0, 0]],
     buff: [
       [-1, 0],
       [-2, 0],
     ],
-    buffLabel: '指し示す方向へ二マス',
-    flavor: '一点を穿つ細針。狙った先の誤差だけを静かに削り取る。',
+    buffLabel: '指す方向へ二マス貫く',
+    flavor: '一点を穿つ細針。狙った直線上の誤差だけを深く抉る。',
   },
   {
     id: 'globe',
@@ -113,6 +156,7 @@ const CATALOG: ItemDef[] = [
     reading: 'CELESTIAL GLOBE',
     emoji: '🌐',
     price: 5,
+    attack: 2,
     rarity: 'astral',
     footprint: [
       [0, 0],
@@ -124,7 +168,7 @@ const CATALOG: ItemDef[] = [
       [1, 0],
       [1, 1],
     ],
-    buffLabel: '横二マスを抱き、上下を潤す',
+    buffLabel: '横二マスを抱き上下を薙ぐ',
     flavor: '星座を内包する硝子の球。回せば天の配置がそのまま傾く。',
   },
   {
@@ -133,6 +177,7 @@ const CATALOG: ItemDef[] = [
     reading: 'TELESCOPE',
     emoji: '🔭',
     price: 5,
+    attack: 6,
     rarity: 'rare',
     footprint: [
       [0, 0],
@@ -143,8 +188,8 @@ const CATALOG: ItemDef[] = [
       [-2, 0],
       [-3, 0],
     ],
-    buffLabel: '筒の先へ遠く三マス',
-    flavor: '遥か遠方の歪みを引き寄せる。長い筒の延長線上に光が伸びる。',
+    buffLabel: '筒の先へ遠く三マス狙撃',
+    flavor: '遥か遠方の歪みを引き寄せ撃つ。長い筒の延長線に光が伸びる。',
   },
   {
     id: 'hourglass',
@@ -152,6 +197,7 @@ const CATALOG: ItemDef[] = [
     reading: 'STAR CLOCK',
     emoji: '⏳',
     price: 3,
+    attack: 1,
     rarity: 'common',
     footprint: [[0, 0]],
     buff: [
@@ -164,8 +210,8 @@ const CATALOG: ItemDef[] = [
       [1, 0],
       [1, 1],
     ],
-    buffLabel: '周囲八マスの時を緩める',
-    flavor: '落ちる砂は星の運行。隣り合う総ての時を、わずかに引き延ばす。',
+    buffLabel: '周囲八マスを薄く削る',
+    flavor: '落ちる砂は星の運行。隣り合う総ての歪みを、わずかずつ磨り減らす。',
   },
   {
     id: 'armillary',
@@ -173,6 +219,7 @@ const CATALOG: ItemDef[] = [
     reading: 'ARMILLARY',
     emoji: '🪐',
     price: 4,
+    attack: 4,
     rarity: 'astral',
     footprint: [[0, 0]],
     buff: [
@@ -181,8 +228,8 @@ const CATALOG: ItemDef[] = [
       [0, -2],
       [0, 2],
     ],
-    buffLabel: '十字の遠点を結ぶ',
-    flavor: '幾重もの環が遠い四点を貫く。離れた器具どうしを共鳴させる環。',
+    buffLabel: '十字の遠点を撃ち抜く',
+    flavor: '幾重もの環が遠い四点を貫く。離れた座標の歪みを同時に討つ環。',
   },
 ];
 
@@ -193,10 +240,15 @@ const CATALOG_BY_ID: Record<string, ItemDef> = Object.fromEntries(
 const REROLL_COST = 1;
 const SELL_RATE = 0.5;
 
+const RARITY: Record<Rarity, { ring: string; chip: string; label: string }> = {
+  common: { ring: 'border-amber-700/30', chip: 'text-amber-200/70 border-amber-700/30', label: '常設器具' },
+  rare: { ring: 'border-amber-500/45', chip: 'text-amber-300 border-amber-500/40', label: '希少器具' },
+  astral: { ring: 'border-amber-300/55', chip: 'text-amber-100 border-amber-300/50', label: '星辰器具' },
+};
+
 /* ----------------------------------------------------------------------------
  * ジオメトリ補助
  * -------------------------------------------------------------------------- */
-// 画面座標（行=下方向 / 列=右方向）での時計回り 90 度回転に対応。
 function rotateCell([r, c]: Cell, rot: Rotation): Cell {
   switch (rot) {
     case 90:
@@ -212,24 +264,18 @@ function rotateCell([r, c]: Cell, rot: Rotation): Cell {
 
 const rotateBy = (rot: Rotation): Rotation => (((rot + 90) % 360) as Rotation);
 
-function absoluteCells(
-  cells: Cell[],
-  anchor: { r: number; c: number },
-  rot: Rotation,
-): { r: number; c: number }[] {
+function absoluteCells(cells: Cell[], anchor: { r: number; c: number }, rot: Rotation) {
   return cells.map((cell) => {
     const [dr, dc] = rotateCell(cell, rot);
     return { r: anchor.r + dr, c: anchor.c + dc };
   });
 }
 
-function footprintCells(def: ItemDef, anchor: { r: number; c: number }, rot: Rotation) {
-  return absoluteCells(def.footprint, anchor, rot);
-}
+const footprintCells = (def: ItemDef, anchor: { r: number; c: number }, rot: Rotation) =>
+  absoluteCells(def.footprint, anchor, rot);
 
-function buffCells(def: ItemDef, anchor: { r: number; c: number }, rot: Rotation) {
-  return absoluteCells(def.buff, anchor, rot).filter((p) => inBounds(p.r, p.c));
-}
+const buffCells = (def: ItemDef, anchor: { r: number; c: number }, rot: Rotation) =>
+  absoluteCells(def.buff, anchor, rot).filter((p) => inBounds(p.r, p.c));
 
 function canPlace(
   def: ItemDef,
@@ -251,7 +297,6 @@ function canPlace(
   return cells.every((p) => !occupied.has(keyOf(p.r, p.c)));
 }
 
-// チップ描画用の包囲ボックス（回転で負方向に張り出すケースを吸収）。
 function boundingBox(def: ItemDef, anchor: { r: number; c: number }, rot: Rotation) {
   const cells = footprintCells(def, anchor, rot);
   const rs = cells.map((p) => p.r);
@@ -268,41 +313,37 @@ function boundingBox(def: ItemDef, anchor: { r: number; c: number }, rot: Rotati
   };
 }
 
+// 歪みの連続位置 → 盤上ピクセル座標（経路上を線形補間。負位置は上方へ退避）。
+function enemyXY(pos: number) {
+  if (pos < 0) {
+    return {
+      x: cellCenter(PATH[0].c),
+      y: cellCenter(PATH[0].r) + pos * (CELL + GAP),
+    };
+  }
+  const clamped = Math.min(PATH.length - 1, pos);
+  const i0 = Math.floor(clamped);
+  const i1 = Math.min(PATH.length - 1, i0 + 1);
+  const f = clamped - i0;
+  const a = PATH[i0];
+  const b = PATH[i1];
+  return {
+    x: cellCenter(a.c + (b.c - a.c) * f),
+    y: cellCenter(a.r + (b.r - a.r) * f),
+  };
+}
+
 /* ----------------------------------------------------------------------------
- * 一意 id
+ * 一意 id / ショップ抽選
  * -------------------------------------------------------------------------- */
 let _seq = 0;
 const nextId = (p: string) => `${p}_${++_seq}`;
 
-interface ShopSlot {
-  slotId: string;
-  defId: string;
-}
-
-function drawShop(count = 4): ShopSlot[] {
-  return Array.from({ length: count }, () => ({
+const drawShop = (count = 4): ShopSlot[] =>
+  Array.from({ length: count }, () => ({
     slotId: nextId('slot'),
     defId: CATALOG[Math.floor(Math.random() * CATALOG.length)].id,
   }));
-}
-
-const RARITY: Record<Rarity, { ring: string; chip: string; label: string }> = {
-  common: {
-    ring: 'border-amber-700/30',
-    chip: 'text-amber-200/70 border-amber-700/30',
-    label: '常設器具',
-  },
-  rare: {
-    ring: 'border-amber-500/45',
-    chip: 'text-amber-300 border-amber-500/40',
-    label: '希少器具',
-  },
-  astral: {
-    ring: 'border-amber-300/55',
-    chip: 'text-amber-100 border-amber-300/50',
-    label: '星辰器具',
-  },
-};
 
 /* ============================================================================
  * 盤面の背景 — 天球図 / 航海図風の同心円とコンパスローズ（純 SVG）
@@ -340,21 +381,18 @@ function BoardBackdrop() {
         ))}
         {spokes.map((deg, i) => {
           const rad = (deg * Math.PI) / 180;
-          const r1 = max * 0.16;
-          const r2 = max * 0.94;
           return (
             <line
               key={i}
-              x1={cx + Math.cos(rad) * r1}
-              y1={cx + Math.sin(rad) * r1}
-              x2={cx + Math.cos(rad) * r2}
-              y2={cx + Math.sin(rad) * r2}
+              x1={cx + Math.cos(rad) * max * 0.16}
+              y1={cx + Math.sin(rad) * max * 0.16}
+              x2={cx + Math.cos(rad) * max * 0.94}
+              y2={cx + Math.sin(rad) * max * 0.94}
               stroke="rgba(218,185,79,0.08)"
               strokeWidth={i % 6 === 0 ? 0.9 : 0.45}
             />
           );
         })}
-        {/* 四方位の銘 */}
         {[
           { t: 'N', x: cx, y: PAD + 10 },
           { t: 'S', x: cx, y: BOARD_PX - PAD - 4 },
@@ -390,14 +428,26 @@ export default function GamePage() {
   const [hoverAnchor, setHoverAnchor] = useState<{ r: number; c: number } | null>(null);
   const [hoverPlacedUid, setHoverPlacedUid] = useState<string | null>(null);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('器具を盤上へドラッグして観測網を編みなさい。');
   const [flash, setFlash] = useState<string | null>(null);
+  const [status, setStatus] = useState('器具を盤上へドラッグし、星の射程で観測網を編め。');
 
-  const boardRef = React.useRef<HTMLDivElement>(null);
+  // ---- 戦闘状態 ----
+  const [running, setRunning] = useState(false);
+  const [stage, setStage] = useState(1);
+  const [observerHp, setObserverHp] = useState(OBSERVER_MAX_HP);
+  const [enemies, setEnemies] = useState<Enemy[]>([]);
+  const [popups, setPopups] = useState<Popup[]>([]);
+  const [gameOver, setGameOver] = useState(false);
+  const [hurt, setHurt] = useState(false);
+
+  const boardRef = useRef<HTMLDivElement>(null);
+  const enemiesRef = useRef<Enemy[]>([]);
+  const popupsRef = useRef<Popup[]>([]);
+  const observerHpRef = useRef(OBSERVER_MAX_HP);
 
   /* ----- 派生: 占有マップ ----- */
   const occupancy = useMemo(() => {
-    const map = new Map<string, string>(); // cellKey -> placed uid
+    const map = new Map<string, string>();
     for (const p of placed) {
       const def = CATALOG_BY_ID[p.defId];
       for (const cell of footprintCells(def, p.anchor, p.rotation)) {
@@ -405,6 +455,21 @@ export default function GamePage() {
       }
     }
     return map;
+  }, [placed]);
+  void occupancy;
+
+  /* ----- 派生: 攻撃マップ（バフ範囲のマス -> 合計攻撃力） ----- */
+  const attackMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of placed) {
+      const def = CATALOG_BY_ID[p.defId];
+      if (!def.attack) continue;
+      for (const cell of buffCells(def, p.anchor, p.rotation)) {
+        const k = keyOf(cell.r, cell.c);
+        m.set(k, (m.get(k) ?? 0) + def.attack);
+      }
+    }
+    return m;
   }, [placed]);
 
   /* ----- 派生: 配置プレビュー ----- */
@@ -419,30 +484,22 @@ export default function GamePage() {
   /* ----- 派生: 星のバフ発光マス ----- */
   const buffSet = useMemo(() => {
     const set = new Set<string>();
-    // (a) ドラッグ中の器具のバフ範囲（配置先プレビュー位置）
     if (drag && hoverAnchor) {
       const def = CATALOG_BY_ID[drag.defId];
-      if (def.buff.length) {
-        for (const p of buffCells(def, hoverAnchor, drag.rotation)) {
-          set.add(keyOf(p.r, p.c));
-        }
-      }
+      for (const p of buffCells(def, hoverAnchor, drag.rotation)) set.add(keyOf(p.r, p.c));
     }
-    // (b) 盤上でホバー中／選択中の器具のバフ範囲
     const focusUid = hoverPlacedUid ?? selectedUid;
     if (focusUid) {
       const item = placed.find((p) => p.uid === focusUid);
       if (item) {
         const def = CATALOG_BY_ID[item.defId];
-        for (const p of buffCells(def, item.anchor, item.rotation)) {
-          set.add(keyOf(p.r, p.c));
-        }
+        for (const p of buffCells(def, item.anchor, item.rotation)) set.add(keyOf(p.r, p.c));
       }
     }
     return set;
   }, [drag, hoverAnchor, hoverPlacedUid, selectedUid, placed]);
 
-  /* ----- 派生: 共鳴度（他器具のバフ圏内に在る器具の数） ----- */
+  /* ----- 派生: 共鳴度 ----- */
   const resonance = useMemo(() => {
     let count = 0;
     for (const p of placed) {
@@ -450,40 +507,42 @@ export default function GamePage() {
       const lit = placed.some((q) => {
         if (q.uid === p.uid) return false;
         const def = CATALOG_BY_ID[q.defId];
-        return buffCells(def, q.anchor, q.rotation).some(
-          (b) => keyOf(b.r, b.c) === anchorKey,
-        );
+        return buffCells(def, q.anchor, q.rotation).some((b) => keyOf(b.r, b.c) === anchorKey);
       });
       if (lit) count += 1;
     }
     return count;
   }, [placed]);
 
-  /* ----- 一時フラッシュ ----- */
+  /* ----- 一時フラッシュ（回転不可など） ----- */
   const pulse = useCallback((uid: string) => {
     setFlash(uid);
     window.setTimeout(() => setFlash((cur) => (cur === uid ? null : cur)), 360);
   }, []);
 
-  /* ----- R キーで回転 ----- */
+  /* ----- 被弾フラッシュの自動解除 ----- */
+  useEffect(() => {
+    if (!hurt) return;
+    const t = window.setTimeout(() => setHurt(false), 240);
+    return () => window.clearTimeout(t);
+  }, [hurt]);
+
+  /* ----- R キーで回転（戦闘中は不可） ----- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'r' && e.key !== 'R') return;
-      // ドラッグ中はドラッグ器具を回転
+      if (running) return;
       if (drag) {
         setDrag((d) => (d ? { ...d, rotation: rotateBy(d.rotation) } : d));
         return;
       }
-      // 選択中の盤上器具をその場で回転（可能なら）
       if (selectedUid) {
         setPlaced((prev) =>
           prev.map((p) => {
             if (p.uid !== selectedUid) return p;
             const def = CATALOG_BY_ID[p.defId];
             const nextRot = rotateBy(p.rotation);
-            if (canPlace(def, p.anchor, nextRot, prev, p.uid)) {
-              return { ...p, rotation: nextRot };
-            }
+            if (canPlace(def, p.anchor, nextRot, prev, p.uid)) return { ...p, rotation: nextRot };
             pulse(p.uid);
             setStatus('そこでは回転できない。盤の縁か、他の器具に阻まれている。');
             return p;
@@ -493,44 +552,129 @@ export default function GamePage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drag, selectedUid, pulse]);
+  }, [drag, selectedUid, running, pulse]);
 
-  /* ----- 盤上の座標を求める ----- */
+  /* ----- 戦闘ループ（requestAnimationFrame） ----- */
+  useEffect(() => {
+    if (!running) return;
+    let raf = 0;
+    let last = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+
+      const pops = popupsRef.current;
+      let hp = observerHpRef.current;
+      const next: Enemy[] = [];
+
+      for (const e of enemiesRef.current) {
+        const prevFloor = Math.floor(e.pos);
+        const pos = e.pos + CELLS_PER_SEC * dt;
+        const newFloor = Math.floor(pos);
+        let ehp = e.hp;
+
+        // 新たに踏み込んだマスでバフ範囲（星の射程）の被弾を解決
+        for (let k = prevFloor + 1; k <= newFloor && k < PATH.length; k++) {
+          if (k < 0) continue;
+          const cell = PATH[k];
+          const dmg = attackMap.get(keyOf(cell.r, cell.c)) ?? 0;
+          if (dmg > 0) {
+            ehp -= dmg;
+            pops.push({
+              id: nextId('pop'),
+              x: cellCenter(cell.c),
+              y: cellCenter(cell.r),
+              value: dmg,
+              kind: 'hit',
+              born: now,
+            });
+            if (ehp <= 0) break;
+          }
+        }
+
+        if (ehp <= 0) continue; // 撃破
+        if (newFloor >= PATH.length) {
+          // 観測官へ到達 — 接触ダメージ
+          hp -= e.power;
+          pops.push({
+            id: nextId('pop'),
+            x: BOARD_PX / 2,
+            y: BOARD_PX - PAD - 4,
+            value: e.power,
+            kind: 'hurt',
+            born: now,
+          });
+          setHurt(true);
+          continue;
+        }
+        next.push({ ...e, pos, hp: ehp });
+      }
+
+      const livePops = pops.filter((p) => now - p.born < POPUP_MS);
+      hp = Math.max(0, hp);
+
+      enemiesRef.current = next;
+      popupsRef.current = livePops;
+      observerHpRef.current = hp;
+      setEnemies(next);
+      setPopups(livePops.slice());
+      setObserverHp(hp);
+
+      if (hp <= 0) {
+        setRunning(false);
+        setGameOver(true);
+        setStatus('観測網は綻び、観測官は座標を見失った——盤上に器具を足し、再観測せよ。');
+        return;
+      }
+      if (next.length === 0) {
+        const reward = 3 + stage;
+        setRunning(false);
+        setGold((g) => g + reward);
+        setStage((s) => s + 1);
+        setStatus(`第 ${stage} 波を退けた。観測報酬 +${reward}G。次の歪みに備えよ。`);
+        return;
+      }
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [running, attackMap, stage]);
+
+  /* ----- 盤上座標の取得 ----- */
   const anchorFromPointer = useCallback((clientX: number, clientY: number) => {
     const el = boardRef.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
-    const x = clientX - rect.left - PAD;
-    const y = clientY - rect.top - PAD;
-    const c = Math.floor(x / (CELL + GAP));
-    const r = Math.floor(y / (CELL + GAP));
-    if (!inBounds(r, c)) return null;
-    return { r, c };
+    const c = Math.floor((clientX - rect.left - PAD) / (CELL + GAP));
+    const r = Math.floor((clientY - rect.top - PAD) / (CELL + GAP));
+    return inBounds(r, c) ? { r, c } : null;
   }, []);
 
   /* ----- ドラッグ＆ドロップ ----- */
   const handleBoardDragOver = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
+      if (running) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       const a = anchorFromPointer(e.clientX, e.clientY);
-      setHoverAnchor((cur) =>
-        cur && a && cur.r === a.r && cur.c === a.c ? cur : a,
-      );
+      setHoverAnchor((cur) => (cur && a && cur.r === a.r && cur.c === a.c ? cur : a));
     },
-    [anchorFromPointer],
+    [anchorFromPointer, running],
   );
 
   const handleBoardDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
+      if (running) return;
       const a = anchorFromPointer(e.clientX, e.clientY);
       const d = drag;
       setHoverAnchor(null);
       if (!a || !d) return;
       const def = CATALOG_BY_ID[d.defId];
       if (!canPlace(def, a, d.rotation, placed, d.uid)) {
-        setStatus('この座標には収まらない。枠の内側で、重ならぬ位置を探しなさい。');
+        setStatus('この座標には収まらない。枠の内側で、重ならぬ位置を探せ。');
         return;
       }
       if (d.source === 'shop') {
@@ -547,22 +691,20 @@ export default function GamePage() {
       } else {
         const movingUid = d.uid;
         setPlaced((prev) =>
-          prev.map((p) =>
-            p.uid === movingUid ? { ...p, anchor: a, rotation: d.rotation } : p,
-          ),
+          prev.map((p) => (p.uid === movingUid ? { ...p, anchor: a, rotation: d.rotation } : p)),
         );
         setSelectedUid(movingUid ?? null);
         setStatus(`${def.name} の座標を補正した。`);
       }
       setDrag(null);
     },
-    [drag, placed, gold, anchorFromPointer],
+    [drag, placed, gold, running, anchorFromPointer],
   );
 
   const beginShopDrag = useCallback(
     (e: React.DragEvent<HTMLDivElement>, slot: ShopSlot) => {
       const def = CATALOG_BY_ID[slot.defId];
-      if (gold < def.price) {
+      if (running || gold < def.price) {
         e.preventDefault();
         return;
       }
@@ -571,22 +713,21 @@ export default function GamePage() {
       setSelectedUid(null);
       setDrag({ source: 'shop', defId: def.id, slotId: slot.slotId, rotation: 0 });
     },
-    [gold],
+    [gold, running],
   );
 
   const beginBoardDrag = useCallback(
     (e: React.DragEvent<HTMLDivElement>, item: PlacedItem) => {
+      if (running) {
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', item.defId);
       setSelectedUid(item.uid);
-      setDrag({
-        source: 'board',
-        defId: item.defId,
-        uid: item.uid,
-        rotation: item.rotation,
-      });
+      setDrag({ source: 'board', defId: item.defId, uid: item.uid, rotation: item.rotation });
     },
-    [],
+    [running],
   );
 
   const endDrag = useCallback(() => {
@@ -594,9 +735,9 @@ export default function GamePage() {
     setHoverAnchor(null);
   }, []);
 
-  /* ----- 売却・解除 ----- */
   const sell = useCallback(
     (item: PlacedItem) => {
+      if (running) return;
       const def = CATALOG_BY_ID[item.defId];
       const refund = Math.max(1, Math.round(def.price * SELL_RATE));
       setPlaced((prev) => prev.filter((p) => p.uid !== item.uid));
@@ -604,11 +745,11 @@ export default function GamePage() {
       setSelectedUid((cur) => (cur === item.uid ? null : cur));
       setStatus(`${def.name} を器具庫へ戻した。+${refund}G の払い戻し。`);
     },
-    [],
+    [running],
   );
 
-  /* ----- 時空再調律（リロール） ----- */
   const reroll = useCallback(() => {
+    if (running) return;
     if (gold < REROLL_COST) {
       setStatus('再調律の対価が足りない。');
       return;
@@ -616,17 +757,72 @@ export default function GamePage() {
     setGold((g) => g - REROLL_COST);
     setShop(drawShop());
     setStatus('時空を再調律した。器具棚の並びが組み変わる。');
-  }, [gold]);
+  }, [gold, running]);
 
-  /* ----- 盤外クリックで選択解除 ----- */
-  const clearSelection = useCallback(() => setSelectedUid(null), []);
+  /* ----- 戦闘制御 ----- */
+  const startWave = useCallback(() => {
+    if (running || gameOver) return;
+    if (attackMap.size === 0) {
+      setStatus('まだ星の射程が一つも無い。器具を据えてから観測を始めよ。');
+      return;
+    }
+    const count = 4 + stage;
+    const maxHp = 7 + stage * 4;
+    const power = 2 + Math.floor(stage / 2);
+    const list: Enemy[] = Array.from({ length: count }, (_, i) => ({
+      id: nextId('enemy'),
+      pos: -1 - i * SPAWN_GAP,
+      hp: maxHp,
+      maxHp,
+      power,
+    }));
+    enemiesRef.current = list;
+    popupsRef.current = [];
+    observerHpRef.current = observerHp;
+    setEnemies(list);
+    setPopups([]);
+    setSelectedUid(null);
+    setHoverPlacedUid(null);
+    setRunning(true);
+    setStatus(`第 ${stage} 波 — ${count} 体の歪みが観測網へ侵入する。`);
+  }, [running, gameOver, stage, attackMap, observerHp]);
+
+  const abortWave = useCallback(() => {
+    setRunning(false);
+    enemiesRef.current = [];
+    popupsRef.current = [];
+    setEnemies([]);
+    setPopups([]);
+    setStatus('観測を中断した。盤を組み直せる。');
+  }, []);
+
+  const resetRun = useCallback(() => {
+    setRunning(false);
+    setGameOver(false);
+    setStage(1);
+    setObserverHp(OBSERVER_MAX_HP);
+    observerHpRef.current = OBSERVER_MAX_HP;
+    enemiesRef.current = [];
+    popupsRef.current = [];
+    setEnemies([]);
+    setPopups([]);
+    setStatus('観測網を張り直した。器具を整え、再び歪みを迎え撃て。');
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    if (!running) setSelectedUid(null);
+  }, [running]);
+
+  const attackCells = useMemo(
+    () => (running ? new Set(attackMap.keys()) : null),
+    [running, attackMap],
+  );
 
   /* ========================================================================
    * 描画
    * ====================================================================== */
   return (
     <main className="gs-starfield relative min-h-screen w-full overflow-x-hidden bg-neutral-950 text-stone-200">
-      {/* ローカルキーフレーム & 補助クラス（このファイルだけで完結） */}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -636,11 +832,18 @@ export default function GamePage() {
           @keyframes gsTwinkle { 0%,100%{opacity:.25} 50%{opacity:.9} }
           @keyframes gsRoseSpin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
           @keyframes gsPulseRed { 0%,100%{box-shadow:0 0 0 0 rgba(244,63,94,0)} 35%{box-shadow:0 0 0 3px rgba(244,63,94,.5),0 0 22px rgba(244,63,94,.55)} }
+          @keyframes gsEnemy { 0%,100%{box-shadow:0 0 10px rgba(199,82,74,.55),inset 0 0 8px rgba(0,0,0,.6)} 50%{box-shadow:0 0 20px rgba(232,96,108,.85),inset 0 0 8px rgba(0,0,0,.6)} }
+          @keyframes gsRise  { 0%{opacity:0; transform:translate(-50%,-50%) scale(.7)} 18%{opacity:1} 100%{opacity:0; transform:translate(-50%,-150%) scale(1.15)} }
+          @keyframes gsHurt  { 0%,100%{box-shadow:0 0 18px rgba(205,167,54,.35)} 50%{box-shadow:0 0 26px rgba(244,63,94,.85), inset 0 0 16px rgba(244,63,94,.5)} }
+          @keyframes gsPath  { to{stroke-dashoffset:-28} }
           .gs-float  { animation: gsFloat 4.5s var(--ease-in-out, ease-in-out) infinite; }
           .gs-aura   { animation: gsAura 1.8s ease-in-out infinite; }
           .gs-twinkle{ animation: gsTwinkle 2.4s ease-in-out infinite; }
           .gs-rose   { animation: gsRoseSpin 240s linear infinite; }
           .gs-flash  { animation: gsPulseRed .36s ease-out; }
+          .gs-enemy  { animation: gsEnemy 1.1s ease-in-out infinite; }
+          .gs-rise   { animation: gsRise .85s ease-out forwards; }
+          .gs-hurt   { animation: gsHurt .24s ease-out; }
           .gs-scan::after {
             content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
             background:repeating-linear-gradient(to bottom, transparent 0 3px, rgba(218,185,79,.05) 3px 4px);
@@ -667,16 +870,15 @@ export default function GamePage() {
             </p>
             <p className="mt-3 max-w-xl font-ritual text-sm leading-relaxed text-stone-400">
               世界の座標を観測し、その誤差を補正する者。器具を 5×5
-              の観測盤に組み、星の繋がりを響かせよ。
+              の観測盤に組み、星の射程で迫る歪みを討て。
             </p>
           </div>
 
-          {/* ステータス */}
           <div className="flex flex-wrap items-center gap-3">
             <StatPill icon="🧭" label="ゴールド" value={`${gold}G`} accent />
+            <StatPill icon="❤" label="観測官 HP" value={`${observerHp}/${OBSERVER_MAX_HP}`} danger={observerHp <= 6} />
             <StatPill icon="❦" label="共鳴" value={`${resonance}`} />
-            <StatPill icon="✦" label="器具" value={`${placed.length}/25`} />
-            <StatPill icon="🜨" label="観測階" value="I" />
+            <StatPill icon="🜨" label="観測階" value={`${stage}`} />
           </div>
         </div>
         <div className="gs-rule mt-6" />
@@ -686,7 +888,9 @@ export default function GamePage() {
       <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-6 py-8 lg:grid-cols-[minmax(0,1fr)_auto]">
         {/* ----------- 左: ショップ ----------- */}
         <section
-          className="rounded-lg border border-amber-600/25 bg-gradient-to-b from-amber-950/15 via-neutral-900/40 to-neutral-950/60 p-5 shadow-[0_2px_24px_rgba(0,0,0,0.5)] backdrop-blur-sm"
+          className={`rounded-lg border border-amber-600/25 bg-gradient-to-b from-amber-950/15 via-neutral-900/40 to-neutral-950/60 p-5 shadow-[0_2px_24px_rgba(0,0,0,0.5)] backdrop-blur-sm transition-opacity duration-300 ${
+            running ? 'pointer-events-none opacity-50' : 'opacity-100'
+          }`}
           aria-label="器具棚"
         >
           <div className="mb-4 flex items-center justify-between">
@@ -697,18 +901,16 @@ export default function GamePage() {
             <button
               type="button"
               onClick={reroll}
-              disabled={gold < REROLL_COST}
+              disabled={gold < REROLL_COST || running}
               className="group relative inline-flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-2 font-display text-xs uppercase tracking-[0.16em] text-amber-200 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:bg-amber-400/15 hover:text-amber-100 hover:shadow-[0_0_22px_rgba(205,167,54,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
             >
-              <span className="text-sm transition-transform duration-500 ease-out group-hover:rotate-180">
-                ⟳
-              </span>
+              <span className="text-sm transition-transform duration-500 ease-out group-hover:rotate-180">⟳</span>
               時空再調律
               <span className="font-mono text-[10px] text-amber-300/70">-{REROLL_COST}G</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-2 gap-4">
             {shop.map((slot) => {
               const def = CATALOG_BY_ID[slot.defId];
               const affordable = gold >= def.price;
@@ -727,28 +929,28 @@ export default function GamePage() {
             })}
             {shop.length === 0 && (
               <div className="col-span-2 rounded-md border border-dashed border-amber-700/30 px-4 py-10 text-center font-ritual text-sm text-stone-500">
-                器具棚は空になった。時空再調律で星棚を組み直しなさい。
+                器具棚は空になった。時空再調律で星棚を組み直せ。
               </div>
             )}
           </div>
 
           <p className="mt-5 font-ritual text-xs leading-relaxed text-stone-500">
-            器具をつまみ、右の観測盤へ運ぶと購入が成立する。ドラッグ中に
-            <kbd className="mx-1 rounded border border-amber-700/40 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
-              R
-            </kbd>
-            で器具を 90 度回す。
+            器具をつまみ右の観測盤へ運ぶと購入が成立する。ドラッグ中に
+            <kbd className="mx-1 rounded border border-amber-700/40 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">R</kbd>
+            で 90 度回転。⚔ は星の射程を通る歪みへ与える観測ダメージ。
           </p>
         </section>
 
-        {/* ----------- 右: 観測盤（バックパック） ----------- */}
+        {/* ----------- 右: 観測盤（バックパック＋戦場） ----------- */}
         <section className="flex flex-col items-center" aria-label="観測盤">
           <div className="mb-3 flex w-full items-center justify-between">
             <div>
               <p className="gs-eyebrow">Astrolabe Board</p>
               <h2 className="font-display text-lg tracking-wide text-stone-100">観測盤</h2>
             </div>
-            <p className="font-mono text-[11px] tracking-wider text-amber-300/60">5 × 5 GRID</p>
+            <p className="font-mono text-[11px] tracking-wider text-amber-300/60">
+              {running ? `WAVE ${stage} · 残 ${enemies.length}` : '5 × 5 GRID'}
+            </p>
           </div>
 
           <div
@@ -762,6 +964,25 @@ export default function GamePage() {
           >
             <BoardBackdrop />
 
+            {/* 進行経路（戦闘中のみ点線で可視化） */}
+            {running && (
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                viewBox={`0 0 ${BOARD_PX} ${BOARD_PX}`}
+                aria-hidden="true"
+              >
+                <polyline
+                  points={PATH.map((p) => `${cellCenter(p.c)},${cellCenter(p.r)}`).join(' ')}
+                  fill="none"
+                  stroke="rgba(199,82,74,0.35)"
+                  strokeWidth={2}
+                  strokeDasharray="4 8"
+                  strokeLinecap="round"
+                  style={{ animation: 'gsPath 1.2s linear infinite' }}
+                />
+              </svg>
+            )}
+
             {/* マス目レイヤー */}
             <div className="absolute inset-0">
               {Array.from({ length: BOARD_N * BOARD_N }, (_, idx) => {
@@ -769,11 +990,12 @@ export default function GamePage() {
                 const c = idx % BOARD_N;
                 const k = keyOf(r, c);
                 const isBuff = buffSet.has(k);
+                const isAttack = attackCells?.has(k) ?? false;
+                const onPath = PATH_KEYS.has(k);
                 const inPreview = preview?.cells.has(k) ?? false;
                 const previewValid = preview?.valid ?? false;
 
-                let edge =
-                  'border border-amber-600/15 bg-white/[0.012]';
+                let edge = 'border border-amber-600/15 bg-white/[0.012]';
                 let glow = '';
                 if (inPreview) {
                   edge = previewValid
@@ -787,13 +1009,12 @@ export default function GamePage() {
                   <div
                     key={k}
                     className="absolute rounded-[3px]"
-                    style={{
-                      left: cellOffset(c),
-                      top: cellOffset(r),
-                      width: CELL,
-                      height: CELL,
-                    }}
+                    style={{ left: cellOffset(c), top: cellOffset(r), width: CELL, height: CELL }}
                   >
+                    {/* 戦闘中の射程ハイライト（持続） */}
+                    {isAttack && !inPreview && (
+                      <div className="pointer-events-none absolute inset-0 rounded-[3px] bg-amber-400/15 shadow-[inset_0_0_12px_rgba(218,185,79,0.3)]" />
+                    )}
                     {/* 星のバフ発光（ホタル明滅） */}
                     {isBuff && !inPreview && (
                       <div className="gs-aura pointer-events-none absolute inset-0 rounded-[3px] bg-amber-400/25 shadow-[0_0_20px_rgba(205,167,54,0.5),inset_0_0_12px_rgba(218,185,79,0.45)]">
@@ -802,10 +1023,12 @@ export default function GamePage() {
                         </span>
                       </div>
                     )}
+                    {/* 経路マーク（戦闘中・非ハイライト時の微かな下地） */}
+                    {running && onPath && !isAttack && !isBuff && (
+                      <div className="pointer-events-none absolute inset-0 rounded-[3px] bg-rose-500/[0.04]" />
+                    )}
                     {/* マスの枠 */}
-                    <div
-                      className={`absolute inset-0 rounded-[3px] transition-all duration-200 ease-out ${edge} ${glow}`}
-                    />
+                    <div className={`absolute inset-0 rounded-[3px] transition-all duration-200 ease-out ${edge} ${glow}`} />
                   </div>
                 );
               })}
@@ -822,35 +1045,30 @@ export default function GamePage() {
               return (
                 <div
                   key={item.uid}
-                  draggable
+                  draggable={!running}
                   onDragStart={(e) => beginBoardDrag(e, item)}
                   onDragEnd={endDrag}
                   onMouseEnter={() => setHoverPlacedUid(item.uid)}
-                  onMouseLeave={() =>
-                    setHoverPlacedUid((cur) => (cur === item.uid ? null : cur))
-                  }
+                  onMouseLeave={() => setHoverPlacedUid((cur) => (cur === item.uid ? null : cur))}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSelectedUid(item.uid);
+                    if (!running) setSelectedUid(item.uid);
                   }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
                     sell(item);
                   }}
-                  className={`group absolute flex cursor-grab items-center justify-center rounded-md border transition-[box-shadow,border-color,transform,opacity] duration-200 ease-out active:cursor-grabbing ${
+                  className={`group absolute z-10 flex items-center justify-center rounded-md border transition-[box-shadow,border-color,transform,opacity] duration-200 ease-out ${
+                    running ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
+                  } ${
                     selected
                       ? 'border-amber-300/80 bg-amber-400/[0.08] shadow-[0_0_24px_rgba(205,167,54,0.45),inset_0_0_14px_rgba(218,185,79,0.2)]'
                       : hovered
                         ? 'border-amber-400/60 bg-amber-400/[0.05] shadow-[0_0_18px_rgba(205,167,54,0.3)]'
                         : 'border-amber-600/30 bg-neutral-900/40'
                   } ${flashing ? 'gs-flash' : ''} ${hidden ? 'opacity-25' : 'opacity-100'}`}
-                  style={{
-                    left: box.left,
-                    top: box.top,
-                    width: box.width,
-                    height: box.height,
-                  }}
-                  title={`${def.name} — ${def.buffLabel}（クリックで選択 / ダブルクリックで売却 / R で回転）`}
+                  style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
+                  title={`${def.name} — ${def.buffLabel}（⚔${def.attack}）`}
                 >
                   <span
                     className="select-none text-3xl drop-shadow-[0_0_10px_rgba(205,167,54,0.45)] transition-transform duration-300 ease-out"
@@ -866,18 +1084,125 @@ export default function GamePage() {
                 </div>
               );
             })}
+
+            {/* 歪み（敵）レイヤー */}
+            {enemies.map((e) => {
+              const { x, y } = enemyXY(e.pos);
+              const ratio = Math.max(0, e.hp / e.maxHp);
+              return (
+                <div
+                  key={e.id}
+                  className="pointer-events-none absolute z-20"
+                  style={{ left: x, top: y, transform: 'translate(-50%,-50%)' }}
+                >
+                  <div className="gs-enemy flex h-9 w-9 items-center justify-center rounded-full border border-rose-400/60 bg-gradient-to-b from-rose-950/90 to-neutral-950/95">
+                    <span className="text-base text-rose-200 drop-shadow-[0_0_6px_rgba(232,96,108,0.9)]">👁</span>
+                  </div>
+                  <div className="mx-auto mt-1 h-1 w-9 overflow-hidden rounded-full bg-neutral-800/90 ring-1 ring-black/40">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-rose-500 to-rose-300 transition-[width] duration-100"
+                      style={{ width: `${ratio * 100}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* ダメージ表示 */}
+            {popups.map((p) => (
+              <span
+                key={p.id}
+                className={`gs-rise pointer-events-none absolute z-30 font-mono text-sm font-bold ${
+                  p.kind === 'hit'
+                    ? 'text-amber-200 drop-shadow-[0_0_6px_rgba(205,167,54,0.9)]'
+                    : 'text-rose-300 drop-shadow-[0_0_6px_rgba(244,63,94,0.9)]'
+                }`}
+                style={{ left: p.x, top: p.y }}
+              >
+                {p.kind === 'hit' ? `-${p.value}` : `-${p.value}♥`}
+              </span>
+            ))}
+
+            {/* ゲームオーバー覆い */}
+            {gameOver && (
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 rounded-lg bg-neutral-950/80 backdrop-blur-sm">
+                <p className="gs-eyebrow text-rose-300/80">Observation Lost</p>
+                <p className="font-display text-2xl tracking-wide text-stone-100">観測網、陥落</p>
+                <p className="max-w-[18rem] text-center font-ritual text-xs leading-relaxed text-stone-400">
+                  歪みが盤を抜け、観測官は座標を失った。網を張り直し、もう一度、星を束ねよ。
+                </p>
+                <button
+                  type="button"
+                  onClick={resetRun}
+                  className="mt-1 rounded-md border border-amber-400/60 bg-amber-400/10 px-5 py-2 font-display text-xs uppercase tracking-[0.16em] text-amber-100 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-amber-400/20 hover:shadow-[0_0_22px_rgba(205,167,54,0.4)]"
+                >
+                  再観測する
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 観測官（プレイヤー本体）＋ HP */}
+          <div className="mt-4 flex w-full max-w-[432px] items-center gap-3">
+            <div
+              className={`flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full border border-amber-400/60 bg-gradient-to-b from-amber-900/40 to-neutral-950 font-display text-lg text-amber-200 shadow-[0_0_18px_rgba(205,167,54,0.35)] ${
+                hurt ? 'gs-hurt' : ''
+              }`}
+              title="方位観察官"
+            >
+              観
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 flex items-baseline justify-between">
+                <span className="font-ritual text-xs tracking-wider text-stone-300">方位観察官</span>
+                <span className="font-mono text-[11px] text-stone-400">
+                  {observerHp} / {OBSERVER_MAX_HP}
+                </span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-full border border-amber-700/30 bg-neutral-900">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-200 ease-out ${
+                    observerHp <= 6
+                      ? 'bg-gradient-to-r from-rose-600 to-rose-400'
+                      : 'bg-gradient-to-r from-amber-500 to-amber-300'
+                  }`}
+                  style={{ width: `${(observerHp / OBSERVER_MAX_HP) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 戦闘コントロール */}
+          <div className="mt-4 flex w-full max-w-[432px] items-center justify-center gap-3">
+            {!running ? (
+              <button
+                type="button"
+                onClick={startWave}
+                disabled={gameOver}
+                className="group inline-flex items-center gap-2 rounded-md border border-amber-400/60 bg-gradient-to-b from-amber-500/15 to-amber-600/5 px-6 py-2.5 font-display text-sm uppercase tracking-[0.18em] text-amber-100 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:from-amber-400/25 hover:shadow-[0_0_26px_rgba(205,167,54,0.45)] focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span className="gs-twinkle text-amber-300">✦</span>
+                第 {stage} 波を観測開始
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={abortWave}
+                className="inline-flex items-center gap-2 rounded-md border border-rose-500/50 bg-rose-500/10 px-6 py-2.5 font-display text-sm uppercase tracking-[0.18em] text-rose-200 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-rose-500/20 hover:shadow-[0_0_22px_rgba(244,63,94,0.4)]"
+              >
+                観測中断
+              </button>
+            )}
           </div>
 
           {/* 盤下の凡例 */}
           <div className="mt-4 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 font-ritual text-[11px] text-stone-500">
-            <Legend swatch="bg-amber-400/40" label="星のバフ範囲" />
+            <Legend swatch="bg-amber-400/40" label="星の射程" />
             <Legend swatch="bg-emerald-400/70" label="配置可能" />
-            <Legend swatch="bg-rose-500/70" label="配置不可" />
+            <Legend swatch="bg-rose-500/70" label="配置不可 / 歪みの経路" />
             <span className="text-stone-600">
               クリックで選択 ・ ダブルクリックで売却 ・
-              <kbd className="mx-1 rounded border border-amber-700/40 bg-neutral-900 px-1 py-0.5 font-mono text-[10px] text-amber-200">
-                R
-              </kbd>
+              <kbd className="mx-1 rounded border border-amber-700/40 bg-neutral-900 px-1 py-0.5 font-mono text-[10px] text-amber-200">R</kbd>
               で回転
             </span>
           </div>
@@ -905,32 +1230,26 @@ function StatPill({
   label,
   value,
   accent = false,
+  danger = false,
 }: {
   icon: string;
   label: string;
   value: string;
   accent?: boolean;
+  danger?: boolean;
 }) {
+  const tone = danger
+    ? 'border-rose-500/50 bg-rose-500/[0.08] shadow-[0_0_18px_rgba(244,63,94,0.18)]'
+    : accent
+      ? 'border-amber-400/50 bg-amber-400/[0.07] shadow-[0_0_18px_rgba(205,167,54,0.18)]'
+      : 'border-amber-700/25 bg-neutral-900/40';
+  const valueTone = danger ? 'text-rose-300' : accent ? 'text-amber-300' : 'text-stone-100';
   return (
-    <div
-      className={`flex items-center gap-2.5 rounded-md border px-3.5 py-2 backdrop-blur-sm transition-colors duration-300 ${
-        accent
-          ? 'border-amber-400/50 bg-amber-400/[0.07] shadow-[0_0_18px_rgba(205,167,54,0.18)]'
-          : 'border-amber-700/25 bg-neutral-900/40'
-      }`}
-    >
-      <span className={`text-base ${accent ? 'gs-twinkle' : ''}`}>{icon}</span>
+    <div className={`flex items-center gap-2.5 rounded-md border px-3.5 py-2 backdrop-blur-sm transition-colors duration-300 ${tone}`}>
+      <span className={`text-base ${accent || danger ? 'gs-twinkle' : ''}`}>{icon}</span>
       <div className="leading-tight">
-        <p className="font-display text-[9px] uppercase tracking-[0.22em] text-stone-500">
-          {label}
-        </p>
-        <p
-          className={`font-mono text-sm font-bold tracking-wide ${
-            accent ? 'text-amber-300' : 'text-stone-100'
-          }`}
-        >
-          {value}
-        </p>
+        <p className="font-display text-[9px] uppercase tracking-[0.22em] text-stone-500">{label}</p>
+        <p className={`font-mono text-sm font-bold tracking-wide ${valueTone}`}>{value}</p>
       </div>
     </div>
   );
@@ -972,19 +1291,15 @@ function ShopCard({
           : 'cursor-not-allowed bg-neutral-950/60 opacity-45 grayscale'
       } ${active ? 'border-amber-300/80 shadow-[0_0_30px_rgba(205,167,54,0.45)]' : ''}`}
     >
-      {/* ホログラム床の光輪 */}
       <div className="pointer-events-none absolute inset-x-6 bottom-3 h-6 rounded-[50%] bg-amber-400/15 blur-md transition-all duration-300 group-hover:bg-amber-300/25" />
 
       <div className="relative flex items-start justify-between">
         <span className="gs-eyebrow text-[9px] tracking-[0.28em]">{def.reading}</span>
-        <span
-          className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${rarity.chip}`}
-        >
+        <span className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${rarity.chip}`}>
           {rarity.label}
         </span>
       </div>
 
-      {/* 浮遊する器具（ホログラム） */}
       <div className="relative my-3 flex h-20 items-center justify-center">
         <div className="absolute h-16 w-16 rounded-full bg-amber-400/10 blur-xl transition-all duration-300 group-hover:bg-amber-300/20" />
         <span
@@ -1003,13 +1318,16 @@ function ShopCard({
             {def.price}G
           </span>
         </div>
-        <p className="mt-1 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-amber-200/60">
-          <span className="text-amber-300">⭐</span>
-          {def.buffLabel}
-        </p>
-        <p className="mt-2 font-ritual text-[11px] leading-relaxed text-stone-500">
-          {def.flavor}
-        </p>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-amber-200/60">
+            <span className="text-amber-300">⭐</span>
+            {def.buffLabel}
+          </p>
+          <span className="inline-flex items-center gap-0.5 font-mono text-[11px] font-bold text-rose-300/90">
+            ⚔{def.attack}
+          </span>
+        </div>
+        <p className="mt-2 font-ritual text-[11px] leading-relaxed text-stone-500">{def.flavor}</p>
       </div>
     </div>
   );
