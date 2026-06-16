@@ -138,6 +138,9 @@ src/
       idle.ts           #   idle/sweep income (gold + star dust over time)
       shapes.ts         #   multi-cell puzzle-piece shapes (rotate / fit / collide)
       equip.ts          #   meta equipment board: fit gear pieces for run-wide passives
+      slots.ts          #   part-slot gear (8 parts + core) → run-wide passives
+      gems.ts           #   gems + sockets (stat bonuses)
+      stars.ts          #   ★ star-upgrade scaling for gear
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
