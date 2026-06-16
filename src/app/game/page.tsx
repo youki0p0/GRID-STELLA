@@ -56,10 +56,16 @@ import { PlacedUnit, synergyBonus } from '@/lib/merge/synergy';
 import { Candidate, TARGET_MODES, TargetMode, nextMode, selectTarget } from '@/lib/merge/targeting';
 import { Rank, endlessHpMul, endlessPowerMul, rankLabel, runScore, starRank } from '@/lib/merge/score';
 import { CodexEntry, fullCodex } from '@/lib/merge/codex';
+import { ComboState, EMPTY_COMBO, comboLabel, comboMult, hitCombo, pruneCombo } from '@/lib/merge/combo';
+import { Mutator, mutatorForWave } from '@/lib/merge/mutators';
+import { parseSettings, serializeSettings } from '@/lib/merge/settings';
+import { bossLine, loreCodex } from '@/lib/merge/lore';
+import { abbrev } from '@/lib/merge/format';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
 const ACH_KEY = 'gs-ach';
+const SETTINGS_KEY = 'gs-settings';
 
 const RARITY_FRAME: Record<Rarity, string> = {
   common: 'border-amber-700/40 from-neutral-800/70 to-neutral-950/80',
@@ -190,6 +196,8 @@ export default function GamePage() {
   const [showCodex, setShowCodex] = useState(false);
   const [finalScore, setFinalScore] = useState(0);
   const [finalRank, setFinalRank] = useState<Rank>('D');
+  const [combo, setCombo] = useState(0);
+  const [mutator, setMutator] = useState<Mutator | null>(null);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -221,6 +229,9 @@ export default function GamePage() {
   const endlessRef = useRef(endless);
   const sellBonusRef = useRef(1);
   const freezeUntilRef = useRef(0);
+  const comboRef = useRef<ComboState>(EMPTY_COMBO);
+  const mutatorRef = useRef<Mutator | null>(null);
+  const settingsLoadedRef = useRef(false);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0, gaugeMul: 1 });
   const enemiesRef = useRef<Enemy[]>([]);
   const beamsRef = useRef<Beam[]>([]);
@@ -249,7 +260,7 @@ export default function GamePage() {
     return synergyBonus(units);
   }, [board]);
 
-  /* ----- 保存値の読み込み ----- */
+  /* ----- 保存値の読み込み（最高到達・設定） ----- */
   useEffect(() => {
     try {
       const b = Number(window.localStorage.getItem(BEST_KEY) || '0');
@@ -257,7 +268,27 @@ export default function GamePage() {
     } catch {
       /* noop */
     }
+    try {
+      const s = parseSettings(window.localStorage.getItem(SETTINGS_KEY));
+      setMutedState(s.muted);
+      setSfxMuted(s.muted);
+      setTargetMode(s.targetMode);
+      setPendingDiff(s.difficulty);
+    } catch {
+      /* noop */
+    }
+    settingsLoadedRef.current = true;
   }, []);
+
+  /* ----- 設定の保存 ----- */
+  useEffect(() => {
+    if (!settingsLoadedRef.current) return;
+    try {
+      window.localStorage.setItem(SETTINGS_KEY, serializeSettings({ muted, targetMode, difficulty }));
+    } catch {
+      /* noop */
+    }
+  }, [muted, targetMode, difficulty]);
 
   const recordBest = useCallback((reached: number) => {
     setBest((prev) => {
@@ -497,24 +528,29 @@ export default function GamePage() {
     const mode = difficultyRef.current;
     const hpMul = endlessHpMul(wave);
     const powMul = endlessPowerMul(wave);
+    const mut = mutatorForWave(wave);
+    mutatorRef.current = mut;
+    setMutator(mut);
     let acc = -1;
     const list: Enemy[] = composeWave(wave).map((s) => {
       acc -= s.kind === 'boss' ? 1.6 : 1.2;
-      const eh = Math.round(scaledEnemyHp(s.hp, mode) * hpMul);
-      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.round(scaledEnemyPower(s.power, mode) * powMul), speed: s.speed, kind: s.kind };
+      const eh = Math.round(scaledEnemyHp(s.hp, mode) * hpMul * mut.hpMul);
+      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.round(scaledEnemyPower(s.power, mode) * powMul), speed: s.speed * mut.speedMul, kind: s.kind };
     });
     enemiesRef.current = list;
     beamsRef.current = [];
     popupsRef.current = [];
     cdRef.current = new Map();
     freezeUntilRef.current = 0;
+    comboRef.current = EMPTY_COMBO;
+    setCombo(0);
     setEnemies(list);
     setBeams([]);
     setPopups([]);
     setDrag(null);
     setPhase('combat');
     playSfx('wave');
-    setStatus(wave % 5 === 0 ? `第 ${wave} 波 — 巨大な歪みが顕現する。` : `第 ${wave} 波 — 歪みが観測網へ侵入する。`);
+    setStatus(wave % 5 === 0 ? bossLine(wave) : `第 ${wave} 波 — 歪みが観測網へ侵入する。`);
   }, [phase, wave]);
 
   /* ----- 戦闘ループ ----- */
@@ -613,6 +649,16 @@ export default function GamePage() {
         } else survivors.push(e);
       }
 
+      // 連撃コンボ（短時間に撃破を重ねると報酬倍率上昇）
+      let cs = comboRef.current;
+      if (killAdd > 0) {
+        for (let i = 0; i < killAdd; i++) cs = hitCombo(cs, now);
+        goldAdd = Math.round(goldAdd * comboMult(cs.count));
+      } else {
+        cs = pruneCombo(cs, now);
+      }
+      comboRef.current = cs;
+
       const liveBeams = beamArr.filter((b) => now - b.born < 130);
       const livePops = popArr.filter((p) => now - p.born < 760);
       hpNow = Math.max(0, hpNow);
@@ -630,6 +676,7 @@ export default function GamePage() {
       setPopups(livePops.slice());
       setHp(hpNow);
       setGauge(gNow);
+      setCombo(cs.count);
       if (killAdd) setKills((kk) => kk + killAdd);
       if (dmgAdd) setDamage((d) => d + dmgAdd);
       if (goldAdd) setGold((g) => g + goldAdd);
@@ -644,7 +691,7 @@ export default function GamePage() {
       }
       if (survivors.length === 0) {
         const cleared = waveRef.current;
-        const bonus = waveReward(cleared, difficultyRef.current);
+        const bonus = Math.round(waveReward(cleared, difficultyRef.current) * (mutatorRef.current?.rewardMul ?? 1));
         setGold((g) => g + bonus);
         recordBest(cleared);
         playSfx('wave');
@@ -776,8 +823,12 @@ export default function GamePage() {
     killsRef.current = 0;
     damageRef.current = 0;
     freezeUntilRef.current = 0;
+    comboRef.current = EMPTY_COMBO;
+    mutatorRef.current = null;
     endlessRef.current = false;
     setEndless(false);
+    setCombo(0);
+    setMutator(null);
     setIntro(false);
     setIntroStep('difficulty');
     setPhase('prep');
@@ -881,6 +932,7 @@ export default function GamePage() {
             <div className="flex flex-shrink-0 items-center gap-1.5">
               <Pill icon="🧭" value={`${gold}`} accent />
               <Pill icon="✦" value={`${wave}${endless ? '' : `/${TOTAL_WAVES}`}`} />
+              <Pill icon="⚔" value={abbrev(kills)} />
               <button type="button" onClick={() => setShowCodex(true)} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="codex">📖</button>
               <button type="button" onClick={toggleMute} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="mute">{muted ? '🔇' : '🔊'}</button>
             </div>
@@ -989,7 +1041,19 @@ export default function GamePage() {
 
             {combat && (
               <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-neutral-950/60 px-2 py-1 font-mono text-[10px] text-amber-300/80" style={{ zIndex: 26 }}>
-                残 {enemies.length} ・ {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} dmg{performance.now() < freezeUntilRef.current ? ' ・ ❄停止' : ''}
+                残 {enemies.length} ・ {abbrev(damage)} dmg{performance.now() < freezeUntilRef.current ? ' ・ ❄停止' : ''}
+              </div>
+            )}
+
+            {combat && mutator && mutator.id !== 'calm' && (
+              <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-amber-500/40 bg-neutral-950/70 px-2 py-1 font-ritual text-[10px] text-amber-200" style={{ zIndex: 26 }}>
+                {mutator.icon} {mutator.name}
+              </div>
+            )}
+
+            {combat && comboLabel(combo) && (
+              <div className="gs-twinkle pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 font-display text-sm font-bold tracking-wide text-amber-300 drop-shadow-[0_0_8px_rgba(205,167,54,0.8)]" style={{ zIndex: 26 }}>
+                {comboLabel(combo)}
               </div>
             )}
 
@@ -1063,7 +1127,7 @@ export default function GamePage() {
                 <p className="font-mono text-sm text-amber-300">{finalRank} ・ {finalScore} pts</p>
                 <p className="font-ritual text-[11px] text-amber-200/70">{rankLabel(finalRank)}</p>
                 <p className="max-w-[16rem] font-ritual text-[11px] leading-relaxed text-stone-400">
-                  撃破 {kills} ・ 累計 {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} ・ 最高 第 {Math.max(best, wave - 1)} 波
+                  撃破 {abbrev(kills)} ・ 累計 {abbrev(damage)} ・ 最高 第 {Math.max(best, wave - 1)} 波
                 </p>
                 {newAch.length > 0 && (
                   <div className="flex max-w-[18rem] flex-wrap items-center justify-center gap-1">
@@ -1096,6 +1160,7 @@ export default function GamePage() {
                   <CodexSection title="器具" entries={codex.instruments} />
                   <CodexSection title="歪み" entries={codex.enemies} />
                   <CodexSection title="必殺" entries={codex.ultimates} />
+                  <CodexSection title="ロア" entries={loreCodex()} />
                 </div>
               </div>
             )}
