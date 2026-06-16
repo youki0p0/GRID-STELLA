@@ -109,8 +109,13 @@ src/
       geometry.ts       #   footprints, placement validity, synergy ranges
       stats.ts          #   resolve placement → combat stats (synergies)
       battle.ts         #   30s / 0.1s realtime battle simulation
-    merge/              # pure logic for the /game merge mode
+    merge/              # pure logic for the /game merge mode (each with a vitest suite)
       engine.ts         #   catalog, draw weights, wave/enemy scaling, merge/sell, cards
+      balance.ts        #   difficulty modes (やさしい/標準/苛烈) + economy
+      skills.ts         #   ultimate gauge + 3 ultimates (nova / freeze / mend)
+      enemies.ts        #   expanded roster (shielded/healer/runner) + composeWave
+      progress.ts       #   run history + achievements (serialize / aggregate / evaluate)
+      fx.ts             #   asset-free WebAudio blips + haptics (SSR-safe)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```

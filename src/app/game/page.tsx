@@ -4,23 +4,21 @@
  * GRID STELLA — 方位観察官の天体調律盤
  * マージ × ループディフェンス × ローグライク（スマホDnD対応・単一画面）
  *
- * 完全に自己完結したクライアント画面。外部ライブラリ不使用、Next.js (App Router)
- * + Tailwind CSS のみ。純粋ロジックは src/lib/merge/engine.ts に分離。
+ * 純粋ロジックは src/lib/merge/* に分離（並列開発した5モジュールを統合）:
+ *   engine   … 盤・経路・器具・マージ・基本波
+ *   balance  … 難易度（やさしい/標準/苛烈）・経済（更新費・波報酬・敵スケール）
+ *   skills   … 必殺ゲージと3種のアルティメット（星霜爆/時間停止/観測補填）
+ *   enemies  … 拡張敵ロスター（盾持ち/治癒/俊足）と合成波 composeWave
+ *   progress … 走行履歴・実績の保存/集計/判定（純粋）
+ *   fx       … WebAudio合成音 ＋ 触覚（アセット不要・SSR安全）
  *
- * 設計要点:
- *   - Pointer Events による統一ドラッグ（マウス／タッチ両対応・指で快適に操作）。
- *   - 5×5 のマージ盤。同種・同レベルの器具を重ねると 1 つ上の器具へ融合。
- *   - 出撃すると「歪み」が経路を進み、器具が射程内を自動で撃つループディフェンス。
- *   - 歪みが観測官へ到達すると HP 減、0 で陥落。波クリアで 3 択の星位カード強化。
- *   - 盤上の器具をドラッグして売却ゾーンへ落とすと払い戻し。
- *   - 最高到達波を保存。初回はチュートリアルを表示。
- *   - 画面はスクロールせず固定。テキスト選択／コピー／長押しメニューを無効化。
+ * 画面はスクロールせず固定。テキスト選択／コピー／長押しメニューを無効化。
+ * Pointer Events による統一ドラッグ（マウス／タッチ両対応）。外部ライブラリ不使用。
  * ========================================================================== */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CardDef,
-  EnemyKind,
   GRID,
   KIND,
   MAX_HP,
@@ -33,7 +31,6 @@ import {
   TYPES,
   TypeId,
   Unit,
-  buildWave,
   canMerge,
   drawType,
   enemyCell,
@@ -44,9 +41,44 @@ import {
   sellValue,
   unitAtk,
 } from '@/lib/merge/engine';
+import {
+  DIFFICULTIES,
+  DIFFICULTY_LIST,
+  Difficulty,
+  rerollCost,
+  scaledEnemyHp,
+  scaledEnemyPower,
+  waveReward,
+} from '@/lib/merge/balance';
+import {
+  EXTRA_KIND,
+  ExtraKind,
+  FullKind,
+  composeWave,
+} from '@/lib/merge/enemies';
+import {
+  FREEZE_MS,
+  GAUGE_MAX,
+  MEND_HP,
+  NOVA_DAMAGE,
+  ULT_LIST,
+  UltId,
+  addGauge,
+  isReady,
+} from '@/lib/merge/skills';
+import {
+  ACHIEVEMENTS,
+  RunRecord,
+  aggregate,
+  evaluateAchievements,
+  parseRuns,
+  serializeRuns,
+} from '@/lib/merge/progress';
+import { playSfx, setMuted as setSfxMuted, vibrate } from '@/lib/merge/fx';
 
 const BEST_KEY = 'gs-best-wave';
-const HINT_KEY = 'gs-hint-seen';
+const RUNS_KEY = 'gs-runs';
+const ACH_KEY = 'gs-ach';
 
 const RARITY_FRAME: Record<Rarity, string> = {
   common: 'border-amber-700/40 from-neutral-800/70 to-neutral-950/80',
@@ -57,6 +89,11 @@ const RARITY_FRAME: Record<Rarity, string> = {
 let _seq = 0;
 const nextId = (p: string) => `${p}_${++_seq}`;
 const makeUnit = (type: TypeId, level = 1): Unit => ({ uid: nextId('u'), type, level });
+
+const isExtra = (k: FullKind): k is ExtraKind => k === 'shielded' || k === 'healer' || k === 'runner';
+const kindRing = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].ring : KIND[k].ring);
+const kindEmoji = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].emoji : k === 'boss' ? '🌑' : '👁');
+const kindSizeVw = (k: FullKind) => (k === 'boss' ? 13 : k === 'tank' || k === 'shielded' ? 10 : k === 'swift' || k === 'runner' ? 6.5 : 8);
 
 /* ----------------------------------------------------------------------------
  * 型（画面ローカル）
@@ -70,7 +107,7 @@ interface Enemy {
   maxHp: number;
   power: number;
   speed: number;
-  kind: EnemyKind;
+  kind: FullKind;
 }
 interface Beam {
   id: string;
@@ -136,15 +173,7 @@ function BoardBackdrop() {
         {spokes.map((deg, i) => {
           const rad = (deg * Math.PI) / 180;
           return (
-            <line
-              key={i}
-              x1={50 + Math.cos(rad) * 48 * 0.14}
-              y1={50 + Math.sin(rad) * 48 * 0.14}
-              x2={50 + Math.cos(rad) * 48 * 0.95}
-              y2={50 + Math.sin(rad) * 48 * 0.95}
-              stroke="rgba(218,185,79,0.08)"
-              strokeWidth={i % 6 === 0 ? 0.35 : 0.18}
-            />
+            <line key={i} x1={50 + Math.cos(rad) * 48 * 0.14} y1={50 + Math.sin(rad) * 48 * 0.14} x2={50 + Math.cos(rad) * 48 * 0.95} y2={50 + Math.sin(rad) * 48 * 0.95} stroke="rgba(218,185,79,0.08)" strokeWidth={i % 6 === 0 ? 0.35 : 0.18} />
           );
         })}
       </g>
@@ -157,6 +186,8 @@ function BoardBackdrop() {
  * ========================================================================== */
 export default function GamePage() {
   const [phase, setPhase] = useState<Phase>('prep');
+  const [intro, setIntro] = useState(true);
+  const [difficulty, setDifficulty] = useState<Difficulty>('standard');
   const [wave, setWave] = useState(1);
   const [best, setBest] = useState(0);
   const [gold, setGold] = useState(0);
@@ -165,6 +196,10 @@ export default function GamePage() {
   const [kills, setKills] = useState(0);
   const [damage, setDamage] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [gauge, setGauge] = useState(0);
+  const [rerolls, setRerolls] = useState(0);
+  const [muted, setMutedState] = useState(false);
+  const [newAch, setNewAch] = useState<string[]>([]);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -176,8 +211,7 @@ export default function GamePage() {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [cards, setCards] = useState<CardDef[]>([]);
   const [hurt, setHurt] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [status, setStatus] = useState('器具を盤へ運び、同じものを重ねて融合せよ。');
+  const [status, setStatus] = useState('難易度を選び、器具を盤へ運んで融合せよ。');
 
   const boardElRef = useRef<HTMLDivElement>(null);
   const sellRef = useRef<HTMLDivElement>(null);
@@ -189,6 +223,11 @@ export default function GamePage() {
   const waveRef = useRef(wave);
   const speedRef = useRef(speed);
   const hpRef = useRef(hp);
+  const gaugeRef = useRef(gauge);
+  const killsRef = useRef(0);
+  const damageRef = useRef(0);
+  const difficultyRef = useRef(difficulty);
+  const freezeUntilRef = useRef(0);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0 });
   const enemiesRef = useRef<Enemy[]>([]);
   const beamsRef = useRef<Beam[]>([]);
@@ -201,22 +240,14 @@ export default function GamePage() {
   useEffect(() => void (waveRef.current = wave), [wave]);
   useEffect(() => void (speedRef.current = speed), [speed]);
   useEffect(() => void (hpRef.current = hp), [hp]);
+  useEffect(() => void (gaugeRef.current = gauge), [gauge]);
+  useEffect(() => void (difficultyRef.current = difficulty), [difficulty]);
 
-  /* ----- 初期化（保存値の読み込み・初回ヒント） ----- */
+  /* ----- 保存値の読み込み ----- */
   useEffect(() => {
     try {
       const b = Number(window.localStorage.getItem(BEST_KEY) || '0');
       if (b > 0) setBest(b);
-      if (!window.localStorage.getItem(HINT_KEY)) setShowHint(true);
-    } catch {
-      /* localStorage 不可環境では無視 */
-    }
-  }, []);
-
-  const dismissHint = useCallback(() => {
-    setShowHint(false);
-    try {
-      window.localStorage.setItem(HINT_KEY, '1');
     } catch {
       /* noop */
     }
@@ -233,6 +264,45 @@ export default function GamePage() {
       return reached;
     });
   }, []);
+
+  /* ----- 走行終了：履歴保存・実績判定 ----- */
+  const finishRun = useCallback(
+    (won: boolean) => {
+      const finalWave = won ? TOTAL_WAVES : Math.max(0, waveRef.current - 1);
+      const rec: RunRecord = { wave: finalWave, kills: killsRef.current, damage: damageRef.current, won, ts: Date.now() };
+      let prevRuns: RunRecord[] = [];
+      try {
+        prevRuns = parseRuns(window.localStorage.getItem(RUNS_KEY));
+      } catch {
+        /* noop */
+      }
+      const all = [rec, ...prevRuns];
+      try {
+        window.localStorage.setItem(RUNS_KEY, serializeRuns(all));
+      } catch {
+        /* noop */
+      }
+      const stats = aggregate(all);
+      recordBest(stats.bestWave);
+      const unlocked = evaluateAchievements(stats);
+      let prevAch: string[] = [];
+      try {
+        const p: unknown = JSON.parse(window.localStorage.getItem(ACH_KEY) || '[]');
+        if (Array.isArray(p)) prevAch = p.filter((x): x is string => typeof x === 'string');
+      } catch {
+        /* noop */
+      }
+      const prevSet = new Set(prevAch);
+      const fresh = unlocked.filter((id) => !prevSet.has(id));
+      try {
+        window.localStorage.setItem(ACH_KEY, JSON.stringify(unlocked));
+      } catch {
+        /* noop */
+      }
+      setNewAch(fresh.map((id) => ACHIEVEMENTS.find((a) => a.id === id)?.title).filter((t): t is string => Boolean(t)));
+    },
+    [recordBest],
+  );
 
   /* ----- 被弾フラッシュの自動解除 ----- */
   useEffect(() => {
@@ -256,7 +326,7 @@ export default function GamePage() {
     };
   }, []);
 
-  /* ----- 射程ハイライト（盤上器具の到達セル） ----- */
+  /* ----- 射程ハイライト ----- */
   const rangeCells = useMemo(() => {
     const set = new Set<string>();
     for (const [k, u] of Object.entries(board)) {
@@ -328,7 +398,6 @@ export default function GamePage() {
       e.preventDefault();
       setDrag(null);
 
-      // 売却ゾーンへ落とした（盤上の器具のみ）
       if (d.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY)) {
         const refund = sellValue(d.unit.level);
         setBoard((prev) => {
@@ -338,6 +407,7 @@ export default function GamePage() {
           return next;
         });
         setGold((g) => g + refund);
+        playSfx('place');
         setStatus(`${TYPES[d.unit.type].name} を器具庫へ戻した。+${refund}G。`);
         return;
       }
@@ -371,8 +441,11 @@ export default function GamePage() {
       if (d.source === 'offer' && d.offerIndex != null) setOffers((prev) => prev.map((o, i) => (i === d.offerIndex ? null : o)));
       if (kind === 'merge') {
         pushFx(pctX(cell.c), pctY(cell.r));
+        playSfx('merge');
+        vibrate('merge');
         setStatus(`${TYPES[d.unit.type].name} を融合し Lv${(occ as Unit).level + 1} へ昇格。`);
       } else {
+        playSfx('place');
         setStatus(`${TYPES[d.unit.type].name} を据えた。`);
       }
     },
@@ -380,16 +453,20 @@ export default function GamePage() {
   );
 
   /* ----- 更新（オファー再抽選） ----- */
+  const curRerollCost = rerollCost(REROLL_COST, rerolls);
   const reroll = useCallback(() => {
     if (phase === 'combat') return;
-    if (gold < REROLL_COST) {
+    const cost = rerollCost(REROLL_COST, rerolls);
+    if (gold < cost) {
       setStatus('更新の対価が足りない。歪みを討ってゴールドを得よ。');
       return;
     }
-    setGold((g) => g - REROLL_COST);
+    setGold((g) => g - cost);
+    setRerolls((r) => r + 1);
     setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
+    playSfx('place');
     setStatus('器具棚を組み直した。');
-  }, [phase, gold]);
+  }, [phase, gold, rerolls]);
 
   const summonFree = useCallback(() => {
     setOffers((prev) => {
@@ -408,21 +485,24 @@ export default function GamePage() {
       setStatus('盤に器具が無い。まず器具を据えてから出撃せよ。');
       return;
     }
-    const specs = buildWave(wave);
+    const mode = difficultyRef.current;
     let acc = -1;
-    const list: Enemy[] = specs.map((s) => {
+    const list: Enemy[] = composeWave(wave).map((s) => {
       acc -= s.kind === 'boss' ? 1.6 : 1.2;
-      return { id: nextId('e'), pos: acc, hp: s.hp, maxHp: s.hp, power: s.power, speed: s.speed, kind: s.kind };
+      const eh = scaledEnemyHp(s.hp, mode);
+      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: scaledEnemyPower(s.power, mode), speed: s.speed, kind: s.kind };
     });
     enemiesRef.current = list;
     beamsRef.current = [];
     popupsRef.current = [];
     cdRef.current = new Map();
+    freezeUntilRef.current = 0;
     setEnemies(list);
     setBeams([]);
     setPopups([]);
     setDrag(null);
     setPhase('combat');
+    playSfx('wave');
     setStatus(wave % 5 === 0 ? `第 ${wave} 波 — 巨大な歪みが顕現する。` : `第 ${wave} 波 — 歪みが観測網へ侵入する。`);
   }, [phase, wave]);
 
@@ -441,20 +521,28 @@ export default function GamePage() {
       const board0 = boardRef.current;
       const beamArr = beamsRef.current;
       const popArr = popupsRef.current;
+      const frozen = now < freezeUntilRef.current;
 
       let hpNow = hpRef.current;
+      let gNow = gaugeRef.current;
       let killAdd = 0;
       let dmgAdd = 0;
       let goldAdd = 0;
 
-      // 歪みの移動・到達
+      // 歪みの移動・到達（時間停止中は静止）
       const alive: Enemy[] = [];
       for (const e of enemiesRef.current) {
+        if (frozen) {
+          alive.push(e);
+          continue;
+        }
         const pos = e.pos + e.speed * dt;
         if (pos >= PATH.length) {
           hpNow -= e.power;
           popArr.push({ id: nextId('p'), x: 50, y: 99, value: e.power, kind: 'hurt', born: now });
           setHurt(true);
+          playSfx('hurt');
+          vibrate('hurt');
           continue;
         }
         alive.push({ ...e, pos });
@@ -467,14 +555,14 @@ export default function GamePage() {
         if (cd <= 0) {
           const rng = TYPES[u.type].range + mod.rangeBonus;
           let target: Enemy | null = null;
-          let best = Infinity;
+          let bestPos = Infinity;
           let tc = { r: 0, c: 0 };
           for (const e of alive) {
             if (e.pos < 0 || e.hp <= 0) continue;
             const ec = enemyCell(e.pos);
             const dist = Math.hypot(ec.r - ur, ec.c - uc);
-            if (dist <= rng && e.pos < best) {
-              best = e.pos;
+            if (dist <= rng && e.pos < bestPos) {
+              bestPos = e.pos;
               target = e;
               tc = ec;
             }
@@ -483,6 +571,7 @@ export default function GamePage() {
             const dmg = Math.round(unitAtk(u.type, u.level) * mod.atkMul);
             target.hp -= dmg;
             dmgAdd += dmg;
+            gNow = addGauge(gNow, dmg);
             beamArr.push({ id: nextId('b'), x1: pctX(uc), y1: pctY(ur), x2: pctX(tc.c), y2: pctY(tc.r), born: now });
             popArr.push({ id: nextId('p'), x: pctX(tc.c), y: pctY(tc.r), value: dmg, kind: 'hit', born: now });
             cd = TYPES[u.type].fireMs * mod.fireMul;
@@ -508,27 +597,36 @@ export default function GamePage() {
       beamsRef.current = liveBeams;
       popupsRef.current = livePops;
       hpRef.current = hpNow;
+      gaugeRef.current = gNow;
+      killsRef.current += killAdd;
+      damageRef.current += dmgAdd;
 
       setEnemies(survivors);
       setBeams(liveBeams.slice());
       setPopups(livePops.slice());
       setHp(hpNow);
+      setGauge(gNow);
       if (killAdd) setKills((k) => k + killAdd);
       if (dmgAdd) setDamage((d) => d + dmgAdd);
       if (goldAdd) setGold((g) => g + goldAdd);
 
       if (hpNow <= 0) {
-        recordBest(waveRef.current - 1);
+        playSfx('gameover');
+        vibrate('gameover');
+        finishRun(false);
         setPhase('gameover');
         setStatus('観測網は綻び、観測官は座標を見失った——。');
         return;
       }
       if (survivors.length === 0) {
         const cleared = waveRef.current;
-        const bonus = 5 + cleared;
+        const bonus = waveReward(cleared, difficultyRef.current);
         setGold((g) => g + bonus);
         recordBest(cleared);
+        playSfx('wave');
         if (cleared >= TOTAL_WAVES) {
+          playSfx('ultimate');
+          finishRun(true);
           setPhase('victory');
           setStatus('全 20 波を退けた。世界の座標は調律された。');
           return;
@@ -542,7 +640,54 @@ export default function GamePage() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [phase, recordBest]);
+  }, [phase, recordBest, finishRun]);
+
+  /* ----- アルティメット ----- */
+  const triggerUlt = useCallback(
+    (id: UltId) => {
+      if (phaseRef.current !== 'combat' || !isReady(gaugeRef.current)) return;
+      playSfx('ultimate');
+      vibrate('ultimate');
+      const now = performance.now();
+      if (id === 'mend') {
+        const nh = Math.min(maxHp, hpRef.current + MEND_HP);
+        hpRef.current = nh;
+        setHp(nh);
+      } else if (id === 'freeze') {
+        freezeUntilRef.current = now + FREEZE_MS;
+      } else {
+        let k = 0;
+        let g = 0;
+        let d = 0;
+        const survivors: Enemy[] = [];
+        for (const e of enemiesRef.current) {
+          if (e.pos < 0) {
+            survivors.push(e);
+            continue;
+          }
+          const nh = e.hp - NOVA_DAMAGE;
+          const cell = enemyCell(e.pos);
+          popupsRef.current.push({ id: nextId('p'), x: pctX(cell.c), y: pctY(cell.r), value: NOVA_DAMAGE, kind: 'hit', born: now });
+          d += NOVA_DAMAGE;
+          if (nh <= 0) {
+            k += 1;
+            g += e.kind === 'boss' ? 12 : 1;
+          } else survivors.push({ ...e, hp: nh });
+        }
+        enemiesRef.current = survivors;
+        setEnemies(survivors);
+        setPopups(popupsRef.current.slice());
+        killsRef.current += k;
+        damageRef.current += d;
+        if (k) setKills((x) => x + k);
+        if (g) setGold((x) => x + g);
+        if (d) setDamage((x) => x + d);
+      }
+      gaugeRef.current = 0;
+      setGauge(0);
+    },
+    [maxHp],
+  );
 
   /* ----- カード選択 ----- */
   const chooseCard = useCallback(
@@ -581,6 +726,7 @@ export default function GamePage() {
           break;
       }
       summonFree();
+      setRerolls(0);
       setWave((w) => w + 1);
       setPhase('prep');
       setStatus('盤を整え、次の歪みを迎え撃て。');
@@ -588,33 +734,59 @@ export default function GamePage() {
     [summonFree],
   );
 
-  /* ----- リスタート ----- */
-  const restart = useCallback(() => {
+  /* ----- 走行開始（難易度確定） ----- */
+  const beginRun = useCallback((mode: Difficulty) => {
+    setDifficulty(mode);
+    difficultyRef.current = mode;
     modRef.current = { atkMul: 1, fireMul: 1, rangeBonus: 0 };
     cdRef.current = new Map();
     enemiesRef.current = [];
     beamsRef.current = [];
     popupsRef.current = [];
     hpRef.current = MAX_HP;
+    gaugeRef.current = 0;
+    killsRef.current = 0;
+    damageRef.current = 0;
+    freezeUntilRef.current = 0;
+    setIntro(false);
     setPhase('prep');
     setWave(1);
-    setGold(0);
+    setGold(DIFFICULTIES[mode].startGold);
     setHp(MAX_HP);
     setMaxHp(MAX_HP);
     setKills(0);
     setDamage(0);
+    setGauge(0);
+    setRerolls(0);
     setSpeed(1);
+    setNewAch([]);
     setBoard({});
     setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
     setEnemies([]);
     setBeams([]);
     setPopups([]);
     setCards([]);
-    setStatus('観測網を張り直した。器具を整え、再び歪みを迎え撃て。');
+    setStatus('器具を盤へ運び、同じものを重ねて融合せよ。');
+  }, []);
+
+  const restart = useCallback(() => {
+    setPhase('prep');
+    setIntro(true);
+    setNewAch([]);
+    setStatus('難易度を選び、再び歪みを迎え撃て。');
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setMutedState((m) => {
+      const nm = !m;
+      setSfxMuted(nm);
+      return nm;
+    });
   }, []);
 
   const combat = phase === 'combat';
   const draggingBoard = drag?.source === 'board';
+  const ultReady = isReady(gauge);
 
   /* ========================================================================
    * 描画
@@ -636,6 +808,7 @@ export default function GamePage() {
           @keyframes gsFxBurst { 0%{opacity:0; transform:translate(-50%,-50%) scale(.3)} 30%{opacity:1} 100%{opacity:0; transform:translate(-50%,-50%) scale(2.1)} }
           @keyframes gsHurt  { 0%,100%{box-shadow:0 0 14px rgba(205,167,54,.3)} 50%{box-shadow:0 0 26px rgba(244,63,94,.9), inset 0 0 14px rgba(244,63,94,.5)} }
           @keyframes gsCard  { from{opacity:0; transform:translateY(14px) scale(.96)} to{opacity:1; transform:translateY(0) scale(1)} }
+          @keyframes gsReady { 0%,100%{box-shadow:0 0 0 0 rgba(205,167,54,.0)} 50%{box-shadow:0 0 16px 1px rgba(205,167,54,.6)} }
           .gs-rose   { animation: gsRoseSpin 260s linear infinite; }
           .gs-aura   { animation: gsAura 1.7s ease-in-out infinite; }
           .gs-twinkle{ animation: gsTwinkle 2.2s ease-in-out infinite; }
@@ -644,6 +817,7 @@ export default function GamePage() {
           .gs-fx     { animation: gsFxBurst .5s ease-out forwards; }
           .gs-hurt   { animation: gsHurt .22s ease-out; }
           .gs-card   { animation: gsCard .32s var(--ease-out, ease-out) both; }
+          .gs-ready  { animation: gsReady 1.2s ease-in-out infinite; }
         `,
         }}
       />
@@ -651,15 +825,18 @@ export default function GamePage() {
       <div className="flex h-full w-full max-w-[440px] flex-col px-3 pb-2 pt-2">
         {/* ===================== 上部 HUD ===================== */}
         <header className="flex-shrink-0">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate font-display text-[10px] uppercase tracking-[0.32em] text-amber-400/80">GRID STELLA</p>
-              <p className="truncate font-ritual text-[11px] tracking-[0.14em] text-amber-200/60">方位観察官の天体調律盤</p>
+              <p className="truncate font-ritual text-[11px] tracking-[0.14em] text-amber-200/60">方位観察官の天体調律盤 ・ {DIFFICULTIES[difficulty].label}</p>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-shrink-0 items-center gap-1.5">
               <Pill icon="🧭" value={`${gold}`} accent />
               <Pill icon="✦" value={`${wave}/${TOTAL_WAVES}`} />
               <Pill icon="⚔" value={kills >= 1000 ? `${(kills / 1000).toFixed(1)}K` : `${kills}`} />
+              <button type="button" onClick={toggleMute} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="mute">
+                {muted ? '🔇' : '🔊'}
+              </button>
             </div>
           </div>
 
@@ -674,7 +851,7 @@ export default function GamePage() {
 
         {/* ===================== 盤（マージ盤＝戦場） ===================== */}
         <div className="flex min-h-0 flex-1 items-center justify-center py-2">
-          <div ref={boardElRef} className="relative aspect-square w-[min(92vw,calc(100dvh-272px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
+          <div ref={boardElRef} className="relative aspect-square w-[min(92vw,calc(100dvh-310px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
             <BoardBackdrop />
 
             {combat && (
@@ -738,12 +915,12 @@ export default function GamePage() {
               const cell = enemyCell(e.pos);
               const ratio = Math.max(0, e.hp / e.maxHp);
               const boss = e.kind === 'boss';
-              const sizeVw = boss ? 13 : e.kind === 'tank' ? 10 : e.kind === 'swift' ? 6.5 : 8;
+              const sizeVw = kindSizeVw(e.kind);
               const maxPx = boss ? 56 : 36;
               return (
                 <div key={e.id} className="pointer-events-none absolute" style={{ left: `${pctX(cell.c)}%`, top: `${pctY(cell.r)}%`, transform: 'translate(-50%,-50%)', zIndex: 18 }}>
-                  <div className={`gs-enemy flex items-center justify-center rounded-full border bg-gradient-to-b from-neutral-900/90 to-neutral-950/95 ${KIND[e.kind].ring}`} style={{ width: `${sizeVw}vw`, maxWidth: maxPx, aspectRatio: '1', boxShadow: '0 0 10px rgba(0,0,0,0.5)' }}>
-                    <span style={{ fontSize: boss ? '1.4rem' : e.kind === 'tank' ? '1.05rem' : '0.85rem' }}>{boss ? '🌑' : '👁'}</span>
+                  <div className={`gs-enemy flex items-center justify-center rounded-full border bg-gradient-to-b from-neutral-900/90 to-neutral-950/95 ${kindRing(e.kind)}`} style={{ width: `${sizeVw}vw`, maxWidth: maxPx, aspectRatio: '1', boxShadow: '0 0 10px rgba(0,0,0,0.5)' }}>
+                    <span style={{ fontSize: boss ? '1.4rem' : '0.9rem' }}>{kindEmoji(e.kind)}</span>
                   </div>
                   <div className="mx-auto mt-0.5 h-0.5 overflow-hidden rounded-full bg-neutral-800" style={{ width: `${sizeVw}vw`, maxWidth: maxPx }}>
                     <div className="h-full rounded-full bg-gradient-to-r from-rose-500 to-rose-300" style={{ width: `${ratio * 100}%` }} />
@@ -766,33 +943,35 @@ export default function GamePage() {
 
             {combat && (
               <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-neutral-950/60 px-2 py-1 font-mono text-[10px] text-amber-300/80" style={{ zIndex: 26 }}>
-                残 {enemies.length} ・ {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} dmg
+                残 {enemies.length} ・ {damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage} dmg{performance.now() < freezeUntilRef.current ? ' ・ ❄停止' : ''}
               </div>
             )}
 
-            {/* 売却ゾーン（盤上器具ドラッグ中のみ） */}
+            {/* 売却ゾーン */}
             {draggingBoard && (
               <div ref={sellRef} className={`pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-4 py-2 font-display text-[11px] uppercase tracking-[0.16em] transition-all duration-150 ${drag?.overSell ? 'border-rose-300/80 bg-rose-500/25 text-rose-100 shadow-[0_0_22px_rgba(244,63,94,0.5)]' : 'border-amber-500/40 bg-neutral-950/80 text-amber-200/80'}`} style={{ zIndex: 30 }}>
                 ♻ 売却 <span className="font-mono">+{sellValue(drag?.unit.level ?? 1)}G</span>
               </div>
             )}
 
-            {/* ===== オーバーレイ ===== */}
-            {showHint && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/90 px-5 text-center backdrop-blur-sm" style={{ zIndex: 50 }}>
+            {/* ===== 導入（難易度選択＋遊びかた） ===== */}
+            {intro && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/92 px-5 text-center backdrop-blur-sm" style={{ zIndex: 50 }}>
                 <p className="gs-eyebrow text-amber-300/80">How to Attune</p>
-                <p className="font-display text-lg tracking-wide text-stone-100">遊びかた</p>
-                <ul className="space-y-1.5 font-ritual text-[12px] leading-relaxed text-stone-300">
-                  <li>① 下の器具を盤へドラッグして配置</li>
-                  <li>② 同じ器具・同レベルを重ねて融合（Lvアップ）</li>
-                  <li>③ 出撃すると器具が歪みを自動で撃つ</li>
-                  <li>④ 歪みが観測官へ届くと HP 減・0 で陥落</li>
-                  <li>⑤ 波クリアで星位カードを 1 枚選び強化</li>
-                  <li>⑥ 盤上の器具は売却ゾーンへドラッグで払い戻し</li>
+                <p className="font-display text-lg tracking-wide text-stone-100">難易度を選ぶ</p>
+                <div className="flex w-full gap-2">
+                  {DIFFICULTY_LIST.map((d) => (
+                    <button key={d.id} type="button" onClick={() => beginRun(d.id)} className="flex flex-1 flex-col items-center gap-1 rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 p-2.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_20px_rgba(205,167,54,0.35)] active:scale-95">
+                      <span className="font-ritual text-[13px] tracking-wide text-amber-100">{d.label}</span>
+                      <span className="text-center font-ritual text-[9px] leading-tight text-stone-400">{d.desc}</span>
+                    </button>
+                  ))}
+                </div>
+                <ul className="mt-1 space-y-1 font-ritual text-[11px] leading-relaxed text-stone-300">
+                  <li>① 下の器具を盤へドラッグ ② 同種・同Lvを重ねて融合</li>
+                  <li>③ 出撃で自動射撃 ④ 観測官HPが0で陥落</li>
+                  <li>⑤ 波クリアで星位カード ⑥ ゲージ満タンで必殺</li>
                 </ul>
-                <button type="button" onClick={dismissHint} className="mt-1 rounded-md border border-amber-400/60 bg-amber-400/10 px-6 py-2 font-display text-xs uppercase tracking-[0.16em] text-amber-100 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-amber-400/20 hover:shadow-[0_0_22px_rgba(205,167,54,0.4)]">
-                  観測を始める
-                </button>
               </div>
             )}
 
@@ -813,13 +992,20 @@ export default function GamePage() {
             )}
 
             {(phase === 'gameover' || phase === 'victory') && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/85 px-4 text-center backdrop-blur-sm" style={{ zIndex: 40 }}>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 rounded-xl bg-neutral-950/88 px-4 text-center backdrop-blur-sm" style={{ zIndex: 40 }}>
                 <p className={`gs-eyebrow ${phase === 'victory' ? 'text-amber-300/80' : 'text-rose-300/80'}`}>{phase === 'victory' ? 'Cosmos Attuned' : 'Observation Lost'}</p>
                 <p className="font-display text-2xl tracking-wide text-stone-100">{phase === 'victory' ? '調律、完了' : '観測網、陥落'}</p>
                 <p className="max-w-[16rem] font-ritual text-xs leading-relaxed text-stone-400">
                   {phase === 'victory' ? '全ての歪みは正された。星々は再び正しい座標に並ぶ。' : `第 ${wave} 波で観測網は破れた。撃破 ${kills} ・ 累計 ${damage >= 1000 ? `${(damage / 1000).toFixed(1)}K` : damage}。`}
                 </p>
                 <p className="font-mono text-[11px] text-amber-300/80">最高到達 第 {Math.max(best, phase === 'victory' ? TOTAL_WAVES : wave - 1)} 波</p>
+                {newAch.length > 0 && (
+                  <div className="flex max-w-[18rem] flex-wrap items-center justify-center gap-1">
+                    {newAch.map((t) => (
+                      <span key={t} className="rounded-full border border-amber-400/50 bg-amber-400/10 px-2 py-0.5 font-ritual text-[10px] text-amber-200">🏅 {t}</span>
+                    ))}
+                  </div>
+                )}
                 <button type="button" onClick={restart} className="mt-1 rounded-md border border-amber-400/60 bg-amber-400/10 px-6 py-2 font-display text-xs uppercase tracking-[0.16em] text-amber-100 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-amber-400/20 hover:shadow-[0_0_22px_rgba(205,167,54,0.4)]">
                   再観測する
                 </button>
@@ -830,29 +1016,52 @@ export default function GamePage() {
 
         {/* ===================== 下部トレイ ===================== */}
         <footer className="flex-shrink-0">
-          <div className="mb-1.5 flex items-stretch gap-2">
-            {offers.map((u, i) => (
-              <div key={i} className="flex-1">
-                {u ? (
-                  <div onPointerDown={(e) => onUnitPointerDown(e, 'offer', u, i)} onPointerMove={onUnitPointerMove} onPointerUp={onUnitPointerUp} className={`relative flex h-[64px] cursor-grab select-none flex-col items-center justify-center rounded-lg border bg-gradient-to-b ${RARITY_FRAME[TYPES[u.type].rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95 ${drag?.source === 'offer' && drag.offerIndex === i ? 'opacity-30' : ''}`} style={{ touchAction: 'none' }}>
-                    <span className="text-2xl leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{TYPES[u.type].emoji}</span>
-                    <span className="mt-0.5 font-ritual text-[9px] tracking-wide text-amber-200/80">{TYPES[u.type].name}</span>
-                    <span className="absolute right-1 top-1 font-mono text-[8px] text-stone-500">{TYPES[u.type].note}</span>
-                  </div>
-                ) : (
-                  <div className="flex h-[64px] items-center justify-center rounded-lg border border-dashed border-amber-700/25 bg-neutral-950/40 font-mono text-[10px] text-stone-600">空</div>
-                )}
+          {/* 必殺ゲージ（戦闘中） */}
+          {combat && (
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="font-display text-[9px] uppercase tracking-[0.18em] text-amber-300/70">必殺</span>
+              <div className="h-2 flex-1 overflow-hidden rounded-full border border-amber-700/30 bg-neutral-900">
+                <div className={`h-full rounded-full bg-gradient-to-r from-amber-500 to-amber-200 transition-[width] duration-150 ${ultReady ? 'gs-ready' : ''}`} style={{ width: `${(gauge / GAUGE_MAX) * 100}%` }} />
               </div>
-            ))}
-          </div>
+            </div>
+          )}
 
+          {/* オファー（器具棚）／必殺ボタン */}
+          {!combat ? (
+            <div className="mb-1.5 flex items-stretch gap-2">
+              {offers.map((u, i) => (
+                <div key={i} className="flex-1">
+                  {u ? (
+                    <div onPointerDown={(e) => onUnitPointerDown(e, 'offer', u, i)} onPointerMove={onUnitPointerMove} onPointerUp={onUnitPointerUp} className={`relative flex h-[64px] cursor-grab select-none flex-col items-center justify-center rounded-lg border bg-gradient-to-b ${RARITY_FRAME[TYPES[u.type].rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95 ${drag?.source === 'offer' && drag.offerIndex === i ? 'opacity-30' : ''}`} style={{ touchAction: 'none' }}>
+                      <span className="text-2xl leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{TYPES[u.type].emoji}</span>
+                      <span className="mt-0.5 font-ritual text-[9px] tracking-wide text-amber-200/80">{TYPES[u.type].name}</span>
+                      <span className="absolute right-1 top-1 font-mono text-[8px] text-stone-500">{TYPES[u.type].note}</span>
+                    </div>
+                  ) : (
+                    <div className="flex h-[64px] items-center justify-center rounded-lg border border-dashed border-amber-700/25 bg-neutral-950/40 font-mono text-[10px] text-stone-600">空</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-1.5 flex items-stretch gap-2">
+              {ULT_LIST.map((u) => (
+                <button key={u.id} type="button" onClick={() => triggerUlt(u.id)} disabled={!ultReady} className={`flex h-[64px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border transition-all duration-200 ease-out active:scale-95 ${ultReady ? 'gs-ready border-amber-400/70 bg-gradient-to-b from-amber-900/40 to-neutral-950/80 text-amber-100 hover:-translate-y-0.5' : 'border-amber-700/25 bg-neutral-950/50 text-stone-600 opacity-60'}`}>
+                  <span className="text-xl leading-none">{u.icon}</span>
+                  <span className="font-ritual text-[10px] tracking-wide">{u.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* 操作ボタン */}
           <div className="flex items-center gap-2">
-            <button type="button" onClick={reroll} disabled={combat || gold < REROLL_COST} className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 font-display text-[11px] uppercase tracking-[0.14em] text-amber-200 transition-all duration-200 ease-out hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
-              <span>⟳</span> 更新 <span className="font-mono text-[9px] text-amber-300/70">-{REROLL_COST}G</span>
+            <button type="button" onClick={reroll} disabled={combat || gold < curRerollCost} className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 font-display text-[11px] uppercase tracking-[0.14em] text-amber-200 transition-all duration-200 ease-out hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
+              <span>⟳</span> 更新 <span className="font-mono text-[9px] text-amber-300/70">-{curRerollCost}G</span>
             </button>
 
             {!combat ? (
-              <button type="button" onClick={startWave} disabled={phase === 'cardpick' || phase === 'gameover' || phase === 'victory'} className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
+              <button type="button" onClick={startWave} disabled={intro || phase === 'cardpick' || phase === 'gameover' || phase === 'victory'} className="flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
                 <span className="gs-twinkle text-amber-300">✦</span> 第 {wave} 波 出撃
               </button>
             ) : (
