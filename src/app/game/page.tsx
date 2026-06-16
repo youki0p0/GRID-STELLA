@@ -67,6 +67,7 @@ import { EventOption, GameEvent, eventForWave } from '@/lib/merge/events';
 import { DEFAULT_META, META_LIST, MetaState, buyUpgrade, canBuy, dustReward, metaBonuses, parseMeta, serializeMeta, upgradeCost } from '@/lib/merge/prestige';
 import { BOSS_MODS, BossMod, bossModForWave, damageThrough, hasteSpeed, regenAmount } from '@/lib/merge/bosses';
 import { DRAW_WEIGHTS } from '@/lib/merge/engine';
+import { Rot, SHAPES, canPlace as shapeCanPlace, footprint as shapeFootprint } from '@/lib/merge/shapes';
 import { RELICS, RELIC_LIST } from '@/lib/merge/relics';
 import { CHAPTERS, StageDef, StageProgress, DEFAULT_PROGRESS, isUnlocked as stageUnlocked, markCleared, parseProgress, serializeProgress } from '@/lib/merge/stages';
 import { Collection, DEFAULT_COLLECTION, MAX_FAVORITES, lockedTypes, parseCollection, serializeCollection, toggleFavorite, unlock as colUnlock } from '@/lib/merge/collection';
@@ -126,9 +127,49 @@ const kindEmoji = (k: FullKind) => (isExtra(k) ? EXTRA_KIND[k].emoji : k === 'bo
 const kindSizeVw = (k: FullKind) => (k === 'boss' ? 13 : k === 'tank' || k === 'shielded' ? 10 : k === 'swift' || k === 'runner' ? 6.5 : 8);
 
 /* ----------------------------------------------------------------------------
- * 型（画面ローカル）
+ * 型（画面ローカル）— 器具は多マスの形を持つパズルピース
  * -------------------------------------------------------------------------- */
-type Board = Record<string, Unit>;
+interface Piece {
+  uid: string;
+  type: TypeId;
+  level: number;
+  rot: Rot;
+  anchor: { r: number; c: number };
+}
+type Board = Record<string, Piece>; // keyed by piece uid
+
+const ROT_NEXT: Record<Rot, Rot> = { 0: 90, 90: 180, 180: 270, 270: 0 };
+const pieceCells = (p: Piece) => shapeFootprint(SHAPES[p.type], p.rot, p.anchor);
+const centroidOf = (cells: { r: number; c: number }[]) => {
+  let r = 0;
+  let c = 0;
+  for (const x of cells) {
+    r += x.r;
+    c += x.c;
+  }
+  return { r: r / cells.length, c: c / cells.length };
+};
+function occupancyOf(board: Board, ignore?: string): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const p of Object.values(board)) {
+    if (p.uid === ignore) continue;
+    for (const cell of pieceCells(p)) m.set(keyOf(cell.r, cell.c), p.uid);
+  }
+  return m;
+}
+function pieceBox(p: Piece) {
+  const cells = pieceCells(p);
+  const rs = cells.map((x) => x.r);
+  const cs = cells.map((x) => x.c);
+  const minR = Math.min(...rs);
+  const minC = Math.min(...cs);
+  return { minR, minC, w: Math.max(...cs) - minC + 1, h: Math.max(...rs) - minR + 1 };
+}
+function firstFit(board: Board, type: TypeId, n: number): { rot: Rot; anchor: { r: number; c: number } } | null {
+  const occ = new Set(occupancyOf(board).keys());
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (shapeCanPlace(SHAPES[type], 0, { r, c }, n, occ)) return { rot: 0, anchor: { r, c } };
+  return null;
+}
 
 interface Enemy {
   id: string;
@@ -167,10 +208,14 @@ type Phase = 'prep' | 'combat' | 'cardpick' | 'event' | 'gameover' | 'victory';
 interface DragState {
   source: 'offer' | 'board';
   offerIndex?: number;
-  cellKey?: string;
+  uid?: string; // 盤上ピースを動かす場合
   unit: Unit;
+  rot: Rot;
   x: number;
   y: number;
+  sx: number; // 掴んだ初期座標（タップ判定用）
+  sy: number;
+  moved: boolean;
   hover: { r: number; c: number; key: string } | null;
   overSell: boolean;
 }
@@ -369,10 +414,7 @@ export default function GamePage() {
 
   /* ----- 盤シナジー（編成効果） ----- */
   const synergy = useMemo(() => {
-    const units: PlacedUnit[] = Object.entries(board).map(([k, u]) => {
-      const [r, c] = k.split(',').map(Number);
-      return { type: u.type, level: u.level, r, c };
-    });
+    const units: PlacedUnit[] = Object.values(board).map((p) => ({ type: p.type, level: p.level, r: p.anchor.r, c: p.anchor.c }));
     return synergyBonus(units);
   }, [board]);
 
@@ -496,13 +538,13 @@ export default function GamePage() {
     };
   }, []);
 
-  /* ----- 射程ハイライト ----- */
+  /* ----- 射程ハイライト（各ピースの重心から） ----- */
   const rangeCells = useMemo(() => {
     const set = new Set<string>();
-    for (const [k, u] of Object.entries(board)) {
-      const [ur, uc] = k.split(',').map(Number);
-      const rng = TYPES[u.type].range + synergy.rangeBonus;
-      for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
+    for (const p of Object.values(board)) {
+      const ce = centroidOf(pieceCells(p));
+      const rng = TYPES[p.type].range + synergy.rangeBonus;
+      for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ce.r, c - ce.c) <= rng + 0.001) set.add(keyOf(r, c));
     }
     return set;
   }, [board, synergy.rangeBonus]);
@@ -510,12 +552,25 @@ export default function GamePage() {
   const hoverRangeCells = useMemo(() => {
     const d = drag;
     if (!d || !d.hover) return null;
-    const { r: ur, c: uc } = d.hover;
+    const ce = centroidOf(shapeFootprint(SHAPES[d.unit.type], d.rot, d.hover));
     const rng = TYPES[d.unit.type].range + synergy.rangeBonus;
     const set = new Set<string>();
-    for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ur, c - uc) <= rng + 0.001) set.add(keyOf(r, c));
+    for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) if (Math.hypot(r - ce.r, c - ce.c) <= rng + 0.001) set.add(keyOf(r, c));
     return set;
   }, [drag, synergy.rangeBonus]);
+
+  // 配置プレビュー（形の footprint 全体を緑／赤で表示。融合先なら相手の形を示す）
+  const placePreview = useMemo(() => {
+    if (!drag || !drag.hover) return null;
+    const occExcl = occupancyOf(board, drag.uid);
+    const mergeUid = occExcl.get(drag.hover.key);
+    if (mergeUid) {
+      const tp = board[mergeUid];
+      return { cells: new Set(pieceCells(tp).map((c) => keyOf(c.r, c.c))), ok: !!tp && canMerge(tp, drag.unit) };
+    }
+    const fc = shapeFootprint(SHAPES[drag.unit.type], drag.rot, drag.hover).filter((x) => x.r >= 0 && x.r < GRID && x.c >= 0 && x.c < GRID);
+    return { cells: new Set(fc.map((c) => keyOf(c.r, c.c))), ok: shapeCanPlace(SHAPES[drag.unit.type], drag.rot, drag.hover, GRID, new Set(occExcl.keys())) };
+  }, [drag, board]);
 
   /* ===================== ドラッグ＆ドロップ（Pointer Events） ===================== */
   const cellFromPoint = useCallback((x: number, y: number) => {
@@ -535,7 +590,7 @@ export default function GamePage() {
   }, []);
 
   const onUnitPointerDown = useCallback(
-    (e: React.PointerEvent, source: 'offer' | 'board', unit: Unit, offerIndex?: number, cellKey?: string) => {
+    (e: React.PointerEvent, source: 'offer' | 'board', unit: Unit, offerIndex?: number, uid?: string) => {
       const p = phaseRef.current;
       if (p === 'gameover' || p === 'victory' || p === 'cardpick' || p === 'event') return;
       e.preventDefault();
@@ -545,18 +600,21 @@ export default function GamePage() {
       } catch {
         /* noop */
       }
-      setDrag({ source, offerIndex, cellKey, unit, x: e.clientX, y: e.clientY, hover: cellFromPoint(e.clientX, e.clientY), overSell: false });
+      const piece = source === 'board' && uid ? boardRef.current[uid] : null;
+      setDrag({ source, offerIndex, uid, unit, rot: piece ? piece.rot : 0, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, hover: cellFromPoint(e.clientX, e.clientY), overSell: false });
     },
     [cellFromPoint],
   );
 
   const onUnitPointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragRef.current) return;
+      const cur = dragRef.current;
+      if (!cur) return;
       e.preventDefault();
       const hover = cellFromPoint(e.clientX, e.clientY);
-      const overSell = dragRef.current.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY);
-      setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, hover, overSell } : d));
+      const overSell = cur.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY);
+      const moved = cur.moved || Math.hypot(e.clientX - cur.sx, e.clientY - cur.sy) > 7;
+      setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, moved, hover, overSell } : d));
     },
     [cellFromPoint],
   );
@@ -568,12 +626,29 @@ export default function GamePage() {
       e.preventDefault();
       setDrag(null);
 
-      if (d.source === 'board' && pointInRect(sellRef.current, e.clientX, e.clientY)) {
+      // 盤上ピースを動かさずに離した＝タップ → その場で90度回転
+      if (d.source === 'board' && d.uid && !d.moved) {
+        setBoard((prev) => {
+          const pc = prev[d.uid!];
+          if (!pc) return prev;
+          const nrot = ROT_NEXT[pc.rot];
+          const occ = new Set(occupancyOf(prev, pc.uid).keys());
+          if (!shapeCanPlace(SHAPES[pc.type], nrot, pc.anchor, GRID, occ)) {
+            setStatus('そこでは回転できない。空きが足りない。');
+            return prev;
+          }
+          playSfx('place');
+          return { ...prev, [pc.uid]: { ...pc, rot: nrot } };
+        });
+        return;
+      }
+
+      // 売却ゾーン
+      if (d.source === 'board' && d.uid && pointInRect(sellRef.current, e.clientX, e.clientY)) {
         const refund = Math.round(sellValue(d.unit.level) * sellBonusRef.current);
         setBoard((prev) => {
-          if (!d.cellKey) return prev;
           const next = { ...prev };
-          delete next[d.cellKey];
+          delete next[d.uid!];
           return next;
         });
         setGold((g) => g + refund);
@@ -587,40 +662,63 @@ export default function GamePage() {
         setStatus('盤の外。器具は元の場所へ戻った。');
         return;
       }
-      const targetKey = cell.key;
-      if (d.source === 'board' && d.cellKey === targetKey) return;
 
-      const occ = boardRef.current[targetKey];
-      let kind: 'place' | 'merge' | 'invalid';
-      if (!occ) kind = 'place';
-      else if (canMerge(occ, d.unit)) kind = 'merge';
-      else kind = 'invalid';
+      const occExcl = occupancyOf(boardRef.current, d.uid);
+      const mergeUid = occExcl.get(cell.key);
 
-      if (kind === 'invalid') {
+      if (mergeUid) {
+        const tp = boardRef.current[mergeUid];
+        if (tp && canMerge(tp, d.unit)) {
+          setBoard((prev) => {
+            const next = { ...prev };
+            next[mergeUid] = { ...tp, level: tp.level + 1 };
+            if (d.source === 'board' && d.uid) delete next[d.uid];
+            return next;
+          });
+          if (d.source === 'offer' && d.offerIndex != null) setOffers((prev) => prev.map((o, i) => (i === d.offerIndex ? null : o)));
+          const ce = centroidOf(pieceCells(tp));
+          pushFx(pctX(ce.c), pctY(ce.r));
+          playSfx('merge');
+          vibrate('merge');
+          setStatus(`${TYPES[d.unit.type].name} を融合し Lv${tp.level + 1} へ昇格。`);
+          return;
+        }
         setStatus('同じ器具・同レベルでないと融合できない。');
         return;
       }
 
+      // 空き → 形が収まるなら配置／移動
+      if (!shapeCanPlace(SHAPES[d.unit.type], d.rot, cell, GRID, new Set(occExcl.keys()))) {
+        setStatus('この形は収まらない。回転（ピースをタップ）や別の場所を試せ。');
+        return;
+      }
       setBoard((prev) => {
-        const next: Board = { ...prev };
-        if (kind === 'merge') next[targetKey] = makeUnit(d.unit.type, (occ as Unit).level + 1);
-        else next[targetKey] = d.source === 'board' ? d.unit : makeUnit(d.unit.type, d.unit.level);
-        if (d.source === 'board' && d.cellKey) delete next[d.cellKey];
+        const next = { ...prev };
+        if (d.source === 'board' && d.uid && prev[d.uid]) {
+          next[d.uid] = { ...prev[d.uid], rot: d.rot, anchor: { r: cell.r, c: cell.c } };
+        } else {
+          const uid = nextId('pc');
+          next[uid] = { uid, type: d.unit.type, level: d.unit.level, rot: d.rot, anchor: { r: cell.r, c: cell.c } };
+        }
         return next;
       });
       if (d.source === 'offer' && d.offerIndex != null) setOffers((prev) => prev.map((o, i) => (i === d.offerIndex ? null : o)));
-      if (kind === 'merge') {
-        pushFx(pctX(cell.c), pctY(cell.r));
-        playSfx('merge');
-        vibrate('merge');
-        setStatus(`${TYPES[d.unit.type].name} を融合し Lv${(occ as Unit).level + 1} へ昇格。`);
-      } else {
-        playSfx('place');
-        setStatus(`${TYPES[d.unit.type].name} を据えた。`);
-      }
+      playSfx('place');
+      setStatus(`${TYPES[d.unit.type].name} を据えた。`);
     },
     [cellFromPoint, pushFx],
   );
+
+  /* ----- R キーでドラッグ中のピースを回転（デスクトップ） ----- */
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'r' && ev.key !== 'R') return;
+      if (!dragRef.current) return;
+      setDrag((d) => (d ? { ...d, rot: ROT_NEXT[d.rot], moved: true } : d));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   /* ----- 更新（オファー再抽選） ----- */
   const curRerollCost = rerollCost(REROLL_COST, rerolls);
@@ -744,22 +842,21 @@ export default function GamePage() {
       }
 
       // 編成シナジーを反映した実効係数
-      const units: PlacedUnit[] = Object.entries(board0).map(([k, u]) => {
-        const [r, c] = k.split(',').map(Number);
-        return { type: u.type, level: u.level, r, c };
-      });
+      const units: PlacedUnit[] = Object.values(board0).map((p) => ({ type: p.type, level: p.level, r: p.anchor.r, c: p.anchor.c }));
       const syn = synergyBonus(units);
       const atkMul = mod.atkMul * syn.atkMul;
       const fireMul = Math.max(0.3, mod.fireMul * syn.fireMul);
       const rangeBonus = mod.rangeBonus + syn.rangeBonus;
       const byId = new Map(alive.map((e) => [e.id, e] as const));
 
-      // 器具の照準・発射
-      for (const [k, u] of Object.entries(board0)) {
-        const [ur, uc] = k.split(',').map(Number);
-        let cd = (cds.get(u.uid) ?? 0) - dt * 1000;
+      // 器具の照準・発射（ピースの重心から）
+      for (const p of Object.values(board0)) {
+        const ce = centroidOf(pieceCells(p));
+        const ur = ce.r;
+        const uc = ce.c;
+        let cd = (cds.get(p.uid) ?? 0) - dt * 1000;
         if (cd <= 0) {
-          const rng = TYPES[u.type].range + rangeBonus;
+          const rng = TYPES[p.type].range + rangeBonus;
           const cands: Candidate[] = [];
           const cellById = new Map<string, { r: number; c: number }>();
           for (const e of alive) {
@@ -775,19 +872,19 @@ export default function GamePage() {
           const target = chosen ? byId.get(chosen.id) : undefined;
           const tc = chosen ? cellById.get(chosen.id) : undefined;
           if (chosen && target && tc) {
-            let dmg = Math.round(unitAtk(u.type, u.level) * atkMul * vulnMul(target.status, now));
+            let dmg = Math.round(unitAtk(p.type, p.level) * atkMul * vulnMul(target.status, now));
             if (target.kind === 'boss' && bmNow === 'bulwark') dmg = damageThrough(dmg, 'bulwark');
             target.hp -= dmg;
             dmgAdd += dmg;
             gNow = addGauge(gNow, dmg * mod.gaugeMul);
-            const eid = effectForInstrument(u.type);
+            const eid = effectForInstrument(p.type);
             if (eid) target.status = applyEffect(target.status, eid, now);
             beamArr.push({ id: nextId('b'), x1: pctX(uc), y1: pctY(ur), x2: pctX(tc.c), y2: pctY(tc.r), born: now });
             popArr.push({ id: nextId('p'), x: pctX(tc.c), y: pctY(tc.r), value: dmg, kind: 'hit', born: now });
-            cd = TYPES[u.type].fireMs * fireMul;
+            cd = TYPES[p.type].fireMs * fireMul;
           }
         }
-        cds.set(u.uid, cd);
+        cds.set(p.uid, cd);
       }
 
       // 撃破判定
@@ -953,7 +1050,7 @@ export default function GamePage() {
             const k = keys[Math.floor(Math.random() * keys.length)];
             const u = prev[k];
             if (u.level >= MAX_LV) return prev;
-            return { ...prev, [k]: makeUnit(u.type, u.level + 1) };
+            return { ...prev, [k]: { ...u, level: u.level + 1 } };
           });
           break;
       }
@@ -1098,11 +1195,15 @@ export default function GamePage() {
     setNewAch([]);
     setFinalScore(0);
     setFinalRank('D');
-    // お気に入り器具を開始ロードアウトとして最上段へ配置
+    // お気に入り器具を開始ロードアウトとして空きへ配置
     const initBoard: Board = {};
-    collectionRef.current.favorites.slice(0, GRID).forEach((t, i) => {
-      initBoard[keyOf(0, i)] = makeUnit(t, 1);
-    });
+    for (const t of collectionRef.current.favorites) {
+      const fit = firstFit(initBoard, t, GRID);
+      if (fit) {
+        const uid = nextId('pc');
+        initBoard[uid] = { uid, type: t, level: 1, rot: fit.rot, anchor: fit.anchor };
+      }
+    }
     setBoard(initBoard);
     setOffers(Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawUnlocked(collectionRef.current.unlocked))));
     setEnemies([]);
@@ -1317,7 +1418,7 @@ export default function GamePage() {
 
         {/* ===================== 盤（マージ盤＝戦場） ===================== */}
         <div className="flex min-h-0 flex-1 items-center justify-center py-2">
-          <div ref={boardElRef} className="relative aspect-square w-[min(92vw,calc(100dvh-330px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
+          <div ref={boardElRef} className="relative aspect-square w-[min(96vw,calc(100dvh-280px))] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[0_12px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
             <BoardBackdrop />
 
             {combat && (
@@ -1333,34 +1434,47 @@ export default function GamePage() {
               const k = keyOf(r, c);
               const inRange = rangeCells.has(k);
               const inHoverRange = hoverRangeCells?.has(k) ?? false;
-              const isHoverCell = drag?.hover?.key === k;
+              const inPreview = placePreview?.cells.has(k) ?? false;
               let hl = '';
-              if (isHoverCell && drag) {
-                const occ = board[k];
-                const ok = !occ || canMerge(occ, drag.unit);
-                hl = ok
-                  ? 'border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_16px_rgba(52,211,153,0.4),inset_0_0_12px_rgba(52,211,153,0.25)]'
-                  : 'border-rose-500/80 bg-rose-500/10 shadow-[0_0_16px_rgba(244,63,94,0.4),inset_0_0_12px_rgba(244,63,94,0.25)]';
+              if (inPreview) {
+                hl = placePreview!.ok
+                  ? 'border-2 border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_16px_rgba(52,211,153,0.4),inset_0_0_12px_rgba(52,211,153,0.25)]'
+                  : 'border-2 border-rose-500/80 bg-rose-500/10 shadow-[0_0_16px_rgba(244,63,94,0.4),inset_0_0_12px_rgba(244,63,94,0.25)]';
               }
               return (
-                <div key={k} className="absolute p-[1.5%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%' }}>
+                <div key={k} className="absolute p-[1%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%' }}>
                   <div className={`relative h-full w-full rounded-md border transition-all duration-150 ease-out ${hl || (inHoverRange ? 'border-amber-400/40 bg-amber-400/[0.06]' : inRange ? 'border-amber-600/20 bg-amber-400/[0.025]' : 'border-amber-600/12 bg-white/[0.012]')}`}>
-                    {inHoverRange && !isHoverCell && <div className="gs-aura pointer-events-none absolute inset-0 rounded-md bg-amber-400/15" />}
+                    {inHoverRange && !inPreview && <div className="gs-aura pointer-events-none absolute inset-0 rounded-md bg-amber-400/15" />}
                   </div>
                 </div>
               );
             })}
 
-            {/* 配置済み器具 */}
-            {Object.entries(board).map(([k, u]) => {
-              const [r, c] = k.split(',').map(Number);
-              const dragging = drag?.source === 'board' && drag.cellKey === k;
-              const def = TYPES[u.type];
+            {/* 配置済み器具（多マスの形ピース） */}
+            {Object.values(board).map((p) => {
+              const box = pieceBox(p);
+              const dragging = drag?.source === 'board' && drag.uid === p.uid;
+              const def = TYPES[p.type];
+              const cells = pieceCells(p);
               return (
-                <div key={u.uid} onPointerDown={(e) => onUnitPointerDown(e, 'board', u, undefined, k)} onPointerMove={onUnitPointerMove} onPointerUp={onUnitPointerUp} className="absolute p-[1.5%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%', touchAction: 'none', zIndex: 10 }}>
-                  <div className={`group relative flex h-full w-full flex-col items-center justify-center rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} ${dragging ? 'opacity-30' : 'opacity-100'} cursor-grab shadow-[inset_0_1px_0_rgba(218,185,79,0.12)] transition-transform duration-150 active:scale-95`}>
-                    <span className="text-[clamp(18px,6.2vw,30px)] leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]">{def.emoji}</span>
-                    <span className="absolute right-0.5 top-0.5 rounded-sm bg-neutral-950/70 px-1 font-mono text-[8px] font-bold leading-tight text-amber-300">L{u.level}</span>
+                <div
+                  key={p.uid}
+                  onPointerDown={(e) => onUnitPointerDown(e, 'board', { uid: p.uid, type: p.type, level: p.level }, undefined, p.uid)}
+                  onPointerMove={onUnitPointerMove}
+                  onPointerUp={onUnitPointerUp}
+                  className={`absolute p-[1%] ${dragging ? 'opacity-30' : 'opacity-100'}`}
+                  style={{ left: `${box.minC * 20}%`, top: `${box.minR * 20}%`, width: `${box.w * 20}%`, height: `${box.h * 20}%`, touchAction: 'none', zIndex: 10 }}
+                >
+                  <div className="group relative h-full w-full cursor-grab transition-transform duration-150 active:scale-95">
+                    {cells.map((cell) => (
+                      <div
+                        key={`${cell.r},${cell.c}`}
+                        className={`absolute rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)]`}
+                        style={{ left: `${((cell.c - box.minC) / box.w) * 100}%`, top: `${((cell.r - box.minR) / box.h) * 100}%`, width: `${(1 / box.w) * 100}%`, height: `${(1 / box.h) * 100}%` }}
+                      />
+                    ))}
+                    <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]" style={{ fontSize: 'clamp(20px,7vw,40px)' }}>{def.emoji}</span>
+                    <span className="pointer-events-none absolute right-0.5 top-0.5 rounded-sm bg-neutral-950/80 px-1 font-mono text-[8px] font-bold text-amber-300">L{p.level}</span>
                   </div>
                 </div>
               );
@@ -1453,9 +1567,10 @@ export default function GamePage() {
                       ))}
                     </div>
                     <ul className="mt-1 space-y-1 font-ritual text-[11px] leading-relaxed text-stone-300">
-                      <li>① 器具を盤へドラッグ ② 同種・同Lvを重ねて融合</li>
-                      <li>③ 出撃で自動射撃 ④ 観測官HPが0で陥落</li>
-                      <li>⑤ 波クリアで星位カード ⑥ ゲージ満タンで必殺</li>
+                      <li>① 器具は形あるピース。盤へドラッグして嵌める</li>
+                      <li>② 置いたピースをタップで90度回転（ドラッグ中はR）</li>
+                      <li>③ 同種・同Lvを重ねて融合 ④ 出撃で自動射撃</li>
+                      <li>⑤ 観測官HPが0で陥落 ⑥ 波クリアで星位カード・ゲージ満で必殺</li>
                     </ul>
                     <button type="button" onClick={() => setShowMeta(true)} className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-1.5 font-ritual text-[11px] tracking-wide text-amber-200 transition-all duration-200 hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95">🌌 星屑強化（{meta.dust}）</button>
                   </>
