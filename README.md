@@ -136,6 +136,7 @@ src/
       gacha.ts          #   summon with pity (unlock instruments / relics)
       trials.ts         #   Trial Path: boss challenges with damage-goal rewards
       idle.ts           #   idle/sweep income (gold + star dust over time)
+      shapes.ts         #   multi-cell puzzle-piece shapes (rotate / fit / collide)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```

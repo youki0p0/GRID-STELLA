@@ -10,6 +10,7 @@ import {
   EXTRA_KIND,
   composeWave,
 } from './enemies';
+import { KIND, waveSpec } from './engine';
 import type { ExtraKind, FullEnemySpec } from './enemies';
 
 /* ---------------------------------------------------------------- EXTRA_KIND */
@@ -160,11 +161,10 @@ describe('ボス', () => {
     expect(kinds).not.toContain('boss');
   });
 
-  it('boss の hp はベース hp × 11 以上（engine.ts と同等）', () => {
+  it('boss の hp はベース hp × ボス倍率（engine.ts と同等）', () => {
     const wave5 = composeWave(5);
     const boss = wave5[wave5.length - 1];
-    // waveSpec(5).hp = 10 + 5*6 = 40, boss hpMul=11 → 440
-    expect(boss.hp).toBeGreaterThanOrEqual(440);
+    expect(boss.hp).toBe(Math.round(waveSpec(5).hp * KIND.boss.hpMul));
   });
 });
 

@@ -130,11 +130,12 @@ export interface WaveSpec {
 }
 
 export function waveSpec(wave: number): WaveSpec {
+  // 序盤をなだらかに、後半で緩やかに伸ばすバランス曲線。
   return {
-    count: 6 + Math.floor(wave * 1.5),
-    hp: 10 + wave * 6,
-    power: 4 + Math.floor(wave / 2),
-    speed: 1.5 + wave * 0.02,
+    count: 4 + wave,
+    hp: 9 + wave * 5,
+    power: 3 + Math.floor(wave / 2),
+    speed: 1.4 + wave * 0.015,
     boss: wave % 5 === 0,
   };
 }
