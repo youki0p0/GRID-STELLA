@@ -75,6 +75,9 @@ import { PITY, PULL_COST, Pull, canPull, nextPity, rollPull } from '@/lib/merge/
 import { TRIALS, Trial, TrialProgress, DEFAULT_TRIAL_PROGRESS, attemptsLeft, parseTrials, rolloverIfNewDay, serializeTrials, spendAttempt, trialReward } from '@/lib/merge/trials';
 import { IdleState, accrued, claim as idleClaim, fillPct, parseIdle, serializeIdle } from '@/lib/merge/idle';
 import { DEFAULT_EQUIP, EQUIP_N, EquipBoard, GEAR_BONUS, GearPiece, canEquip, equipBonuses, equipCells, parseEquip, serializeEquip } from '@/lib/merge/equip';
+import { DEFAULT_REGALIA, Gear, Regalia, SLOT_LIST, SlotId, combineBonuses, gearById, parseRegalia, regaliaBonuses, serializeRegalia, socketsForRarity } from '@/lib/merge/slots';
+import { GEM_COST, GEM_KINDS, GEMS, Gem, MAX_TIER, gemBonus, gemById, gemLabel, parseGems, serializeGems } from '@/lib/merge/gems';
+import { MAX_STAR, canStarUp, starMul, starUpCost } from '@/lib/merge/stars';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
@@ -88,6 +91,36 @@ const TRIAL_KEY = 'gs-trials';
 const IDLE_KEY = 'gs-idle';
 const RESERVE_KEY = 'gs-reserve';
 const EQUIP_KEY = 'gs-equip';
+const REGALIA_KEY = 'gs-regalia';
+const GEMSOWN_KEY = 'gs-gemsown';
+
+// 宝物庫: ランダム装備/宝石の生成（調達用）
+const GEAR_FIELDS: { apply: (r: number) => Partial<Record<string, number>>; key: string }[] = [
+  { key: 'atkMul', apply: (r) => ({ atkMul: 1 + 0.04 * r }) },
+  { key: 'fireMul', apply: (r) => ({ fireMul: 1 - 0.025 * r }) },
+  { key: 'rangeBonus', apply: (r) => ({ rangeBonus: 0.12 * r }) },
+  { key: 'startGold', apply: (r) => ({ startGold: 2 * r }) },
+  { key: 'maxHpBonus', apply: (r) => ({ maxHpBonus: 4 * r }) },
+  { key: 'dustMul', apply: (r) => ({ dustMul: 1 + 0.04 * r }) },
+  { key: 'sellBonus', apply: (r) => ({ sellBonus: 1 + 0.03 * r }) },
+];
+function rollRarity(): Rarity {
+  const x = Math.random();
+  return x < 0.6 ? 'common' : x < 0.9 ? 'rare' : 'astral';
+}
+const RAR_W: Record<Rarity, number> = { common: 1, rare: 2, astral: 3 };
+function makeRandomGear(): Gear {
+  const slot = SLOT_LIST[Math.floor(Math.random() * SLOT_LIST.length)];
+  const rarity = rollRarity();
+  const field = GEAR_FIELDS[Math.floor(Math.random() * GEAR_FIELDS.length)];
+  const bonus = field.apply(RAR_W[rarity]) as Gear['bonus'];
+  return { id: nextId('gear'), slot: slot.id, name: slot.name, icon: slot.icon, rarity, star: 0, sockets: Array.from({ length: socketsForRarity(rarity) }, () => null), bonus };
+}
+function makeRandomGem(): Gem {
+  const kind = GEM_KINDS[Math.floor(Math.random() * GEM_KINDS.length)];
+  const tier = 1 + Math.floor(Math.random() * MAX_TIER);
+  return { id: nextId('gem'), kind, tier };
+}
 const STARTER_RELICS: RelicId[] = ['lens', 'sextant', 'aegis', 'ledger'];
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -299,7 +332,7 @@ export default function GamePage() {
 
   // ---- ロビー/メタ層 ----
   const [home, setHome] = useState(true);
-  const [lobbyView, setLobbyView] = useState<'home' | 'stages' | 'collection' | 'gacha' | 'trials' | 'idle' | 'equip'>('home');
+  const [lobbyView, setLobbyView] = useState<'home' | 'stages' | 'collection' | 'gacha' | 'trials' | 'idle' | 'equip' | 'regalia'>('home');
   const [collection, setCollection] = useState<Collection>(DEFAULT_COLLECTION);
   const [relicUnlocks, setRelicUnlocks] = useState<RelicId[]>(STARTER_RELICS);
   const [stageProgress, setStageProgress] = useState<StageProgress>(DEFAULT_PROGRESS);
@@ -313,6 +346,10 @@ export default function GamePage() {
   const [trialId, setTrialId] = useState<string | null>(null);
   const [equip, setEquip] = useState<EquipBoard>(DEFAULT_EQUIP);
   const [equipDrag, setEquipDrag] = useState<{ source: 'inv' | 'board'; type: TypeId; uid?: string; rot: Rot; x: number; y: number; sx: number; sy: number; moved: boolean; hover: { r: number; c: number; key: string } | null } | null>(null);
+  const [regalia, setRegalia] = useState<Regalia>(DEFAULT_REGALIA);
+  const [gemsOwned, setGemsOwned] = useState<Gem[]>([]);
+  const [slotSel, setSlotSel] = useState<SlotId | null>(null);
+  const [socketPick, setSocketPick] = useState<{ gearId: string; idx: number } | null>(null);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -357,6 +394,8 @@ export default function GamePage() {
   const reserveRef = useRef(0);
   const equipRef = useRef(equip);
   const equipDragRef = useRef(equipDrag);
+  const regaliaRef = useRef(regalia);
+  const gemsOwnedRef = useRef(gemsOwned);
   const equipBoardElRef = useRef<HTMLDivElement>(null);
   const settingsLoadedRef = useRef(false);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0, gaugeMul: 1 });
@@ -384,6 +423,8 @@ export default function GamePage() {
   useEffect(() => void (pendingStageRef.current = pendingStage), [pendingStage]);
   useEffect(() => void (equipRef.current = equip), [equip]);
   useEffect(() => void (equipDragRef.current = equipDrag), [equipDrag]);
+  useEffect(() => void (regaliaRef.current = regalia), [regalia]);
+  useEffect(() => void (gemsOwnedRef.current = gemsOwned), [gemsOwned]);
 
   /* ----- メタ層の読み込み ----- */
   useEffect(() => {
@@ -396,6 +437,8 @@ export default function GamePage() {
       setIdle(parseIdle(window.localStorage.getItem(IDLE_KEY), now));
       setReserve(Math.max(0, Number(window.localStorage.getItem(RESERVE_KEY) || '0')));
       setEquip(parseEquip(window.localStorage.getItem(EQUIP_KEY)));
+      setRegalia(parseRegalia(window.localStorage.getItem(REGALIA_KEY)));
+      setGemsOwned(parseGems(window.localStorage.getItem(GEMSOWN_KEY)));
       const ru: unknown = JSON.parse(window.localStorage.getItem(RELICUNLOCK_KEY) || 'null');
       if (Array.isArray(ru)) {
         const valid = ru.filter((x): x is RelicId => typeof x === 'string' && x in RELICS);
@@ -484,7 +527,12 @@ export default function GamePage() {
         const tr = TRIALS.find((t) => t.id === tid);
         if (tr) dust += trialReward(tr, damageRef.current);
       }
-      dust = Math.round(dust * equipBonuses(equipRef.current).dustMul);
+      const gemRes = (gid: string) => {
+        const g = gemById(gemsOwnedRef.current, gid);
+        return g ? gemBonus(g) : {};
+      };
+      const totalBonus = combineBonuses(equipBonuses(equipRef.current), regaliaBonuses(regaliaRef.current, starMul, gemRes));
+      dust = Math.round(dust * totalBonus.dustMul);
       setDustGain(dust);
       if (dust > 0) {
         setMeta((m) => {
@@ -1162,7 +1210,11 @@ export default function GamePage() {
   const beginRun = useCallback((mode: Difficulty, chosen: Relic) => {
     const eff = relicEffect(chosen.id);
     const mb = metaBonuses(metaRef.current);
-    const eb = equipBonuses(equipRef.current);
+    const gemRes = (gid: string) => {
+      const g = gemById(gemsOwnedRef.current, gid);
+      return g ? gemBonus(g) : {};
+    };
+    const eb = combineBonuses(equipBonuses(equipRef.current), regaliaBonuses(regaliaRef.current, starMul, gemRes));
     setDifficulty(mode);
     difficultyRef.current = mode;
     setRelic(chosen);
@@ -1430,6 +1482,97 @@ export default function GamePage() {
     },
     [cellFromEquipPoint, commitEquip],
   );
+
+  /* ----- 宝物庫（部位スロット / 宝石 / 星強化） ----- */
+  const commitRegalia = useCallback(
+    (next: Regalia) => {
+      setRegalia(next);
+      regaliaRef.current = next;
+      persist(REGALIA_KEY, serializeRegalia(next));
+    },
+    [persist],
+  );
+  const commitGems = useCallback(
+    (next: Gem[]) => {
+      setGemsOwned(next);
+      gemsOwnedRef.current = next;
+      persist(GEMSOWN_KEY, serializeGems(next));
+    },
+    [persist],
+  );
+  const equipGear = useCallback((g: Gear) => commitRegalia({ ...regaliaRef.current, equipped: { ...regaliaRef.current.equipped, [g.slot]: g.id } }), [commitRegalia]);
+  const unequipSlot = useCallback(
+    (slot: SlotId) => {
+      const eq = { ...regaliaRef.current.equipped };
+      delete eq[slot];
+      commitRegalia({ ...regaliaRef.current, equipped: eq });
+    },
+    [commitRegalia],
+  );
+  const starUp = useCallback(
+    (gearId: string) => {
+      setMeta((m) => {
+        const reg = regaliaRef.current;
+        const g = gearById(reg, gearId);
+        if (!g || !canStarUp(g.star, m.dust)) {
+          if (g && g.star >= MAX_STAR) setStatus('既に最大星。');
+          else setStatus('星屑が足りない。');
+          return m;
+        }
+        const cost = starUpCost(g.star);
+        commitRegalia({ ...reg, owned: reg.owned.map((o) => (o.id === gearId ? { ...o, star: o.star + 1 } : o)) });
+        const nm = { ...m, dust: m.dust - cost };
+        saveMeta(nm);
+        return nm;
+      });
+    },
+    [commitRegalia, saveMeta],
+  );
+  const socketGemInto = useCallback(
+    (gearId: string, idx: number, gemId: string) => {
+      const reg = regaliaRef.current;
+      const owned = reg.owned.map((o) => ({ ...o, sockets: o.sockets.map((s) => (s === gemId ? null : s)) }));
+      commitRegalia({ ...reg, owned: owned.map((o) => (o.id === gearId ? { ...o, sockets: o.sockets.map((s, i) => (i === idx ? gemId : s)) } : o)) });
+      setSocketPick(null);
+    },
+    [commitRegalia],
+  );
+  const unsocket = useCallback(
+    (gearId: string, idx: number) => {
+      const reg = regaliaRef.current;
+      commitRegalia({ ...reg, owned: reg.owned.map((o) => (o.id === gearId ? { ...o, sockets: o.sockets.map((s, i) => (i === idx ? null : s)) } : o)) });
+    },
+    [commitRegalia],
+  );
+  const buyGear = useCallback(() => {
+    setMeta((m) => {
+      const cost = 8;
+      if (m.dust < cost) {
+        setStatus('星屑が足りない。');
+        return m;
+      }
+      const g = makeRandomGear();
+      commitRegalia({ ...regaliaRef.current, owned: [...regaliaRef.current.owned, g] });
+      setStatus(`装備【${g.name}】を調達した。`);
+      const nm = { ...m, dust: m.dust - cost };
+      saveMeta(nm);
+      return nm;
+    });
+  }, [commitRegalia, saveMeta]);
+  const buyGem = useCallback(() => {
+    setMeta((m) => {
+      if (m.dust < GEM_COST) {
+        setStatus('星屑が足りない。');
+        return m;
+      }
+      const gem = makeRandomGem();
+      commitGems([...gemsOwnedRef.current, gem]);
+      setStatus(`宝石【${gemLabel(gem)}】を調達した。`);
+      const nm = { ...m, dust: m.dust - GEM_COST };
+      saveMeta(nm);
+      return nm;
+    });
+  }, [commitGems, saveMeta]);
 
   const toggleMute = useCallback(() => {
     setMutedState((m) => {
@@ -1821,7 +1964,7 @@ export default function GamePage() {
               <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/95 backdrop-blur-sm" style={{ zIndex: 55 }}>
                 <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
                   <div>
-                    <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : lobbyView === 'equip' ? '観測装 ・ 装備盤' : '放置観測'}</p>
+                    <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : lobbyView === 'equip' ? '観測装 ・ 装備盤' : lobbyView === 'regalia' ? '宝物庫 ・ 部位装備' : '放置観測'}</p>
                     <p className="font-mono text-[10px] text-amber-300/70">🌌{meta.dust} ・ 🪙貯蓄{reserve} ・ 最高{best}波</p>
                   </div>
                   {lobbyView !== 'home' ? (
@@ -1840,6 +1983,7 @@ export default function GamePage() {
                         { k: 'gacha', icon: '🎰', label: '召喚', sub: '星屑で解放', on: () => setLobbyView('gacha') },
                         { k: 'col', icon: '📚', label: 'コレクション', sub: '編成・お気に入り', on: () => setLobbyView('collection') },
                         { k: 'equip', icon: '🛡', label: '観測装', sub: '装備パズル盤', on: () => setLobbyView('equip') },
+                        { k: 'regalia', icon: '💎', label: '宝物庫', sub: '部位装備・宝石・星', on: () => { setSlotSel(null); setSocketPick(null); setLobbyView('regalia'); } },
                         { k: 'trial', icon: '⚔', label: '試練の道', sub: 'ダメージ目標', on: () => setLobbyView('trials') },
                         { k: 'idle', icon: '💤', label: '放置観測', sub: '時間で収益', on: () => setLobbyView('idle') },
                         { k: 'meta', icon: '🌌', label: '星屑強化', sub: '恒久upgrade', on: () => setShowMeta(true) },
@@ -2029,6 +2173,97 @@ export default function GamePage() {
                               })}
                             </div>
                           </div>
+                        </div>
+                      );
+                    })()}
+
+                  {lobbyView === 'regalia' &&
+                    (() => {
+                      const gemRes = (gid: string) => {
+                        const g = gemById(gemsOwned, gid);
+                        return g ? gemBonus(g) : {};
+                      };
+                      const rb = regaliaBonuses(regalia, starMul, gemRes);
+                      const socketedIds = new Set<string>();
+                      regalia.owned.forEach((o) => o.sockets.forEach((s) => s && socketedIds.add(s)));
+                      const availGems = gemsOwned.filter((g) => !socketedIds.has(g.id));
+                      const pct = (m: number) => `${m >= 1 ? '+' : ''}${Math.round((m - 1) * 100)}%`;
+                      const selGear = slotSel ? gearById(regalia, regalia.equipped[slotSel] ?? '') : undefined;
+                      const ownedForSlot = slotSel ? regalia.owned.filter((o) => o.slot === slotSel) : [];
+                      return (
+                        <div className="flex flex-col gap-3">
+                          <div className="flex flex-wrap items-center justify-center gap-1">
+                            {Math.round((rb.atkMul - 1) * 100) !== 0 && <Tag>攻撃 {pct(rb.atkMul)}</Tag>}
+                            {Math.round((rb.fireMul - 1) * 100) !== 0 && <Tag>連射 {pct(rb.fireMul)}</Tag>}
+                            {rb.rangeBonus > 0 && <Tag>射程 +{rb.rangeBonus.toFixed(1)}</Tag>}
+                            {rb.startGold > 0 && <Tag>初期G +{rb.startGold}</Tag>}
+                            {rb.maxHpBonus > 0 && <Tag>最大HP +{rb.maxHpBonus}</Tag>}
+                            {Math.round((rb.dustMul - 1) * 100) !== 0 && <Tag>星屑 {pct(rb.dustMul)}</Tag>}
+                            {Math.round((rb.sellBonus - 1) * 100) !== 0 && <Tag>売却 {pct(rb.sellBonus)}</Tag>}
+                            {Object.keys(regalia.equipped).length === 0 && <span className="font-ritual text-[10px] text-stone-600">まだ部位装備をしていない。</span>}
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
+                            {SLOT_LIST.map((s) => {
+                              const g = gearById(regalia, regalia.equipped[s.id] ?? '');
+                              const active = slotSel === s.id;
+                              return (
+                                <button key={s.id} type="button" onClick={() => { setSlotSel(active ? null : s.id); setSocketPick(null); }} className={`flex flex-col items-center rounded-lg border p-2 transition-all active:scale-95 ${active ? 'border-amber-300/80 bg-amber-400/10' : 'border-amber-700/30 bg-neutral-900/40'}`}>
+                                  <span className="text-[9px] text-stone-500">{s.name}</span>
+                                  <span className="text-2xl leading-none">{g ? g.icon : s.icon}</span>
+                                  {g ? <span className="font-mono text-[8px] text-amber-300">{g.rarity[0].toUpperCase()}★{g.star}</span> : <span className="text-[8px] text-stone-600">空</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {slotSel && (
+                            <div className="space-y-2 rounded-lg border border-amber-600/30 bg-neutral-950/60 p-2.5">
+                              {selGear ? (
+                                <>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-2xl">{selGear.icon}</span>
+                                    <p className="min-w-0 flex-1 font-ritual text-[12px] text-amber-100">{selGear.name} <span className="text-stone-500">{selGear.rarity} ★{selGear.star}/{MAX_STAR}</span></p>
+                                    <button type="button" onClick={() => starUp(selGear.id)} disabled={selGear.star >= MAX_STAR} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 font-mono text-[10px] text-amber-200 active:scale-95 disabled:opacity-40">{selGear.star >= MAX_STAR ? 'MAX' : `★ 🌌${starUpCost(selGear.star)}`}</button>
+                                    <button type="button" onClick={() => unequipSlot(slotSel)} className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200 active:scale-95">外す</button>
+                                  </div>
+                                  {selGear.sockets.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {selGear.sockets.map((sid, idx) => {
+                                        const gm = sid ? gemById(gemsOwned, sid) : undefined;
+                                        return <button key={idx} type="button" onClick={() => (gm ? unsocket(selGear.id, idx) : setSocketPick({ gearId: selGear.id, idx }))} className={`rounded-full border px-2 py-1 text-[10px] active:scale-95 ${gm ? 'border-amber-400/60 bg-amber-400/15 text-amber-100' : 'border-dashed border-amber-700/40 text-stone-500'}`}>{gm ? `${GEMS[gm.kind].icon} ${gemLabel(gm)} ✕` : '＋宝石'}</button>;
+                                      })}
+                                    </div>
+                                  )}
+                                  {socketPick && socketPick.gearId === selGear.id && (
+                                    <div className="rounded-md border border-amber-700/30 bg-neutral-900/50 p-2">
+                                      <p className="mb-1 font-ritual text-[10px] text-stone-400">嵌める宝石を選ぶ</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {availGems.length ? availGems.map((g) => <button key={g.id} type="button" onClick={() => socketGemInto(selGear.id, socketPick.idx, g.id)} className="rounded-full border border-amber-500/40 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200 active:scale-95">{GEMS[g.kind].icon} {gemLabel(g)}</button>) : <span className="text-[10px] text-stone-600">空き宝石が無い。下で調達を。</span>}
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <p className="font-ritual text-[10px] text-stone-500">この部位は空。下から装備を選ぶ。</p>
+                              )}
+                              <div>
+                                <p className="gs-eyebrow mb-1 text-amber-300/70">この部位の所持装備</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {ownedForSlot.length ? ownedForSlot.map((g) => {
+                                    const isOn = regalia.equipped[slotSel] === g.id;
+                                    return <button key={g.id} type="button" onClick={() => equipGear(g)} className={`rounded-md border px-2 py-1 text-[10px] active:scale-95 ${isOn ? 'border-amber-300/70 bg-amber-400/15 text-amber-100' : 'border-amber-700/30 bg-neutral-900/40 text-stone-300'}`}>{g.icon} {g.rarity[0].toUpperCase()}★{g.star}{isOn ? ' ✓' : ''}</button>;
+                                  }) : <span className="text-[10px] text-stone-600">この部位の装備を所持していない。</span>}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2">
+                            <button type="button" onClick={buyGear} className="flex-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 font-display text-[11px] text-amber-200 active:scale-95">装備調達 <span className="font-mono text-[9px] text-amber-300/70">🌌8</span></button>
+                            <button type="button" onClick={buyGem} className="flex-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 font-display text-[11px] text-amber-200 active:scale-95">宝石調達 <span className="font-mono text-[9px] text-amber-300/70">🌌{GEM_COST}</span></button>
+                          </div>
+                          <p className="text-center font-ritual text-[9px] text-stone-500">🌌{meta.dust} ・ 所持装備{regalia.owned.length} ・ 宝石{gemsOwned.length}。部位装備＋宝石＋星の合計が全走行へ反映される。</p>
                         </div>
                       );
                     })()}
