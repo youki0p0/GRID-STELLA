@@ -1,0 +1,45 @@
+/* ============================================================
+   GRID STELLA — SPACING, RADII, SIZING TOKENS
+   A 4px base grid. Tight, instrument-like spacing — this is a
+   dense control panel, not an airy marketing page.
+   ============================================================ */
+
+:root {
+  /* ---- Space scale (4px base) --------------------------------- */
+  --space-0:   0;
+  --space-1:   0.25rem;  /* 4 */
+  --space-2:   0.5rem;   /* 8 */
+  --space-3:   0.75rem;  /* 12 */
+  --space-4:   1rem;     /* 16 */
+  --space-5:   1.25rem;  /* 20 */
+  --space-6:   1.5rem;   /* 24 */
+  --space-8:   2rem;     /* 32 */
+  --space-10:  2.5rem;   /* 40 */
+  --space-12:  3rem;     /* 48 */
+  --space-16:  4rem;     /* 64 */
+
+  /* ---- Radii --------------------------------------------------- */
+  /* Sharp and delicate. Corners are nearly square — engraved brass,
+     not soft plastic. Pills only for chips/costs.                  */
+  --radius-none: 0;
+  --radius-xs:   2px;
+  --radius-sm:   3px;
+  --radius-md:   5px;
+  --radius-lg:   8px;
+  --radius-pill: 999px;
+
+  /* ---- Grid / board sizing ------------------------------------ */
+  --cell-size:   72px;   /* one 5x5 board cell */
+  --cell-gap:    4px;
+  --board-pad:   12px;
+
+  /* ---- Hairline width ----------------------------------------- */
+  --hairline: 1px;
+
+  /* ---- Semantic ----------------------------------------------- */
+  --gap-tight:   var(--space-2);
+  --gap-default: var(--space-4);
+  --gap-loose:   var(--space-6);
+  --pad-card:    var(--space-4);
+  --pad-panel:   var(--space-6);
+}

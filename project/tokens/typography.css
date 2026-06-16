@@ -1,0 +1,55 @@
+/* ============================================================
+   GRID STELLA — TYPOGRAPHY TOKENS
+   Display = engraved astrolabe capitals (Cinzel).
+   Ritual  = solemn mincho for Japanese titling (Shippori Mincho).
+   UI/Body = clean sans (Zen Kaku Gothic New).
+   Readout = mono for numeric instrument stats (Space Mono).
+   ============================================================ */
+
+:root {
+  /* ---- Families ----------------------------------------------- */
+  --font-display: 'Cinzel', 'Shippori Mincho', serif;
+  --font-ritual:  'Shippori Mincho', 'Cinzel', serif;
+  --font-ui:      'Zen Kaku Gothic New', system-ui, sans-serif;
+  --font-mono:    'Space Mono', ui-monospace, monospace;
+
+  /* ---- Type scale (rem, 16px root) ---------------------------- */
+  --text-2xs:   0.6875rem;  /* 11px — micro labels */
+  --text-xs:    0.75rem;    /* 12px — captions, costs */
+  --text-sm:    0.875rem;   /* 14px — secondary UI */
+  --text-base:  1rem;       /* 16px — body */
+  --text-lg:    1.125rem;   /* 18px — lead */
+  --text-xl:    1.375rem;   /* 22px — card titles */
+  --text-2xl:   1.75rem;    /* 28px — section heads */
+  --text-3xl:   2.25rem;    /* 36px — page titles */
+  --text-4xl:   3rem;       /* 48px — hero */
+  --text-5xl:   4rem;       /* 64px — wordmark */
+
+  /* ---- Weights ------------------------------------------------ */
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semi:    600;
+  --weight-bold:    700;
+
+  /* ---- Line heights ------------------------------------------- */
+  --leading-tight:  1.1;
+  --leading-snug:   1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed:1.7;
+
+  /* ---- Letter spacing ----------------------------------------- */
+  /* Display capitals carry wide tracking — engraved, ceremonial.  */
+  --tracking-tightest: -0.02em;
+  --tracking-normal:   0em;
+  --tracking-wide:     0.08em;
+  --tracking-wider:    0.16em;   /* display sub-headlines */
+  --tracking-widest:   0.32em;   /* the wordmark, eyebrows */
+
+  /* ---- Semantic roles ----------------------------------------- */
+  --role-wordmark-font:   var(--font-display);
+  --role-wordmark-track:  var(--tracking-widest);
+  --role-title-font:      var(--font-display);
+  --role-ritual-font:     var(--font-ritual);
+  --role-body-font:       var(--font-ui);
+  --role-readout-font:    var(--font-mono);
+}

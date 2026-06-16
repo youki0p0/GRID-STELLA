@@ -1,0 +1,91 @@
+/* ============================================================
+   GRID STELLA — COLOR TOKENS
+   "Machina Navigator" — pitch black, white, and delicate gold.
+   A strict, restrained palette: ink-black grounds, pale white
+   light, and a single refined metallic gold used like inlay.
+   ============================================================ */
+
+:root {
+  /* ---- Ink: the black ground ---------------------------------- */
+  --ink-pure:   #000000;  /* absolute black — the void behind everything */
+  --ink-950:    #060607;  /* page background */
+  --ink-900:    #0b0b0d;  /* deep panel */
+  --ink-850:    #111114;  /* raised surface */
+  --ink-800:    #17171b;  /* card / hologram body */
+  --ink-750:    #1e1e23;  /* card on card, hover lift */
+  --ink-700:    #26262c;  /* inset wells, grid cells */
+
+  /* ---- Gold: the instrument inlay ----------------------------- */
+  /* One metallic gold, expressed as a tonal scale. Used sparingly,
+     like engraving on a brass astrolabe. Never as fill, almost
+     always as line, text, or low-alpha glow.                      */
+  --gold-50:    #faf3da;
+  --gold-100:   #f3e6b8;
+  --gold-200:   #e7cf86;
+  --gold-300:   #dab94f;  /* bright reading gold — primary accent text */
+  --gold-400:   #cda736;  /* core gold */
+  --gold-500:   #b98f28;  /* deep gold — borders, pressed */
+  --gold-600:   #926e1d;  /* shadowed gold */
+  --gold-700:   #6b4f15;  /* near-bronze, faintest lines */
+
+  /* ---- Light: the white range --------------------------------- */
+  --white-pure: #ffffff;
+  --stone-50:   #f7f6f3;  /* primary text on dark */
+  --stone-200:  #d8d5cd;  /* secondary text */
+  --stone-400:  #9b978d;  /* muted / captions */
+  --stone-500:  #726f67;  /* disabled, faint labels */
+  --stone-600:  #4d4b46;  /* hairline on dark, dividers */
+
+  /* ---- Functional (kept desaturated to respect the palette) --- */
+  --signal-valid:   #6fae7e;  /* valid placement — muted sage green */
+  --signal-invalid: #c0524a;  /* invalid placement — oxidized red */
+  --signal-shield:  #7fa6c9;  /* shield / defense — cold steel blue */
+
+  /* ---- Gold as light (glows, washes, synergy auras) ----------- */
+  --gold-glow-08:  rgba(205, 167, 54, 0.08);
+  --gold-glow-15:  rgba(205, 167, 54, 0.15);
+  --gold-glow-20:  rgba(205, 167, 54, 0.20);  /* synergy tile wash */
+  --gold-glow-35:  rgba(205, 167, 54, 0.35);
+  --gold-line-20:  rgba(218, 185, 79, 0.20);  /* faint grid lines */
+  --gold-line-40:  rgba(218, 185, 79, 0.40);  /* card borders */
+  --gold-line-70:  rgba(218, 185, 79, 0.70);  /* active / focused edge */
+
+  /* ============================================================
+     SEMANTIC ALIASES — reference these in components.
+     ============================================================ */
+
+  /* Surfaces */
+  --bg-page:        var(--ink-950);
+  --bg-void:        var(--ink-pure);
+  --surface-panel:  var(--ink-900);
+  --surface-card:   var(--ink-800);
+  --surface-raised: var(--ink-750);
+  --surface-well:   var(--ink-700);
+  --surface-cell:   rgba(255, 255, 255, 0.015);
+
+  /* Text */
+  --text-primary:   var(--stone-50);
+  --text-secondary: var(--stone-200);
+  --text-muted:     var(--stone-400);
+  --text-disabled:  var(--stone-500);
+  --text-gold:      var(--gold-300);
+  --text-gold-deep: var(--gold-400);
+
+  /* Lines & borders */
+  --border-hairline: var(--stone-600);
+  --border-gold:     var(--gold-line-40);
+  --border-gold-faint: var(--gold-line-20);
+  --border-gold-active: var(--gold-line-70);
+
+  /* Accent */
+  --accent:         var(--gold-400);
+  --accent-bright:  var(--gold-300);
+  --accent-deep:    var(--gold-500);
+
+  /* Synergy & states */
+  --synergy-wash:   var(--gold-glow-20);
+  --synergy-edge:   var(--gold-line-70);
+  --state-valid:    var(--signal-valid);
+  --state-invalid:  var(--signal-invalid);
+  --state-shield:   var(--signal-shield);
+}

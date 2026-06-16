@@ -1,0 +1,18 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="Elevation & gold glow" subtitle="Deep ink shadows for depth; gold glow is the only emitted light" -->
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  html,body{margin:0}
+  body{background:var(--ink-900);padding:26px 24px;display:flex;gap:26px;flex-wrap:wrap}
+  .box{width:130px;height:78px;background:var(--surface-card);border:1px solid var(--gold-line-20);
+       border-radius:var(--radius-md);display:flex;align-items:flex-end;padding:8px}
+  .cap{font-family:var(--font-mono);font-size:9px;color:var(--text-muted)}
+</style></head>
+<body class="gs-root">
+  <div class="box" style="box-shadow:var(--shadow-sm)"><span class="cap">shadow-sm</span></div>
+  <div class="box" style="box-shadow:var(--shadow-md)"><span class="cap">shadow-md</span></div>
+  <div class="box" style="box-shadow:var(--shadow-lg)"><span class="cap">shadow-lg</span></div>
+  <div class="box" style="box-shadow:var(--glow-gold-sm);border-color:var(--gold-line-40)"><span class="cap">glow-gold-sm</span></div>
+  <div class="box" style="box-shadow:var(--glow-gold-lg);border-color:var(--gold-line-40)"><span class="cap">glow-gold-lg</span></div>
+</body></html>

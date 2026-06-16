@@ -1,0 +1,22 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Light & Signals" subtitle="The white range, plus the three desaturated functional signals" -->
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  html,body{margin:0}
+  body{background:var(--ink-950);padding:18px;display:flex;gap:10px;flex-wrap:wrap}
+  .sw{flex:1;min-width:70px;height:96px;border-radius:var(--radius-sm);display:flex;flex-direction:column;
+      justify-content:flex-end;padding:8px;border:1px solid var(--gold-line-20)}
+  .n{font-family:var(--font-mono);font-size:10px;font-weight:700}
+  .h{font-family:var(--font-mono);font-size:9px;opacity:0.7}
+  .lt .n,.lt .h{color:var(--ink-950)} .dk .n,.dk .h{color:var(--stone-50)}
+</style></head>
+<body class="gs-root">
+  <div class="sw lt" style="background:var(--stone-50)"><span class="n">stone-50·text</span><span class="h">#f7f6f3</span></div>
+  <div class="sw lt" style="background:var(--stone-200)"><span class="n">200·secondary</span><span class="h">#d8d5cd</span></div>
+  <div class="sw dk" style="background:var(--stone-400)"><span class="n">400·muted</span><span class="h">#9b978d</span></div>
+  <div class="sw dk" style="background:var(--stone-600)"><span class="n">600·hairline</span><span class="h">#4d4b46</span></div>
+  <div class="sw lt" style="background:var(--signal-valid)"><span class="n">valid</span><span class="h">#6fae7e</span></div>
+  <div class="sw lt" style="background:var(--signal-invalid)"><span class="n">invalid</span><span class="h">#c0524a</span></div>
+  <div class="sw lt" style="background:var(--signal-shield)"><span class="n">shield</span><span class="h">#7fa6c9</span></div>
+</body></html>
