@@ -131,6 +131,11 @@ src/
       events.ts         #   between-wave random risk/reward events
       prestige.ts       #   cross-run meta progression (star dust upgrades)
       bosses.ts         #   boss modifiers (regen / haste / bulwark)
+      stages.ts         #   chapter/stage select with sequential unlock + progress
+      collection.ts     #   instrument roster + favorites (starting loadout)
+      gacha.ts          #   summon with pity (unlock instruments / relics)
+      trials.ts         #   Trial Path: boss challenges with damage-goal rewards
+      idle.ts           #   idle/sweep income (gold + star dust over time)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
