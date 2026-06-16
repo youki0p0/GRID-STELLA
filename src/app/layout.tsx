@@ -13,6 +13,17 @@ export const metadata: Metadata = {
       'A luxury dark-fantasy backpack-puzzle / auto-battler. Black, white, and one gold.',
     type: 'website',
   },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'GRID STELLA',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'GRID STELLA — 天体調律盤',
+    description:
+      'A luxury dark-fantasy backpack-puzzle / auto-battler. Arrange celestial instruments, chain star-link synergies, survive infinite distortion waves.',
+  },
 };
 
 export const viewport: Viewport = {
