@@ -121,6 +121,11 @@ src/
       targeting.ts      #   targeting strategies (first/last/strong/weak/near)
       score.ts          #   score, star rank, endless-mode scaling past wave 20
       codex.ts          #   in-game codex (instruments / enemies / ultimates)
+      combo.ts          #   kill-streak combo → reward multiplier
+      mutators.ts       #   per-wave mutators (hp/speed/reward twists)
+      settings.ts       #   persisted preferences (mute / target mode / difficulty)
+      lore.ts           #   world lore entries + boss intro lines
+      format.ts         #   compact number / percent formatting
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
