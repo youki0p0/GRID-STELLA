@@ -61,11 +61,17 @@ import { Mutator, mutatorForWave } from '@/lib/merge/mutators';
 import { parseSettings, serializeSettings } from '@/lib/merge/settings';
 import { bossLine, loreCodex } from '@/lib/merge/lore';
 import { abbrev } from '@/lib/merge/format';
+import { NO_STATUS, Status, applyEffect, burnTick, effectForInstrument, speedMul, vulnMul } from '@/lib/merge/effects';
+import { SHOP_ITEMS, SHOP_LIST, ShopItemId, canAfford, shopEffect } from '@/lib/merge/shop';
+import { EventOption, GameEvent, eventForWave } from '@/lib/merge/events';
+import { DEFAULT_META, META_LIST, MetaState, buyUpgrade, canBuy, dustReward, metaBonuses, parseMeta, serializeMeta, upgradeCost } from '@/lib/merge/prestige';
+import { BOSS_MODS, BossMod, bossModForWave, damageThrough, hasteSpeed, regenAmount } from '@/lib/merge/bosses';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
 const ACH_KEY = 'gs-ach';
 const SETTINGS_KEY = 'gs-settings';
+const META_KEY = 'gs-meta';
 
 const RARITY_FRAME: Record<Rarity, string> = {
   common: 'border-amber-700/40 from-neutral-800/70 to-neutral-950/80',
@@ -95,6 +101,7 @@ interface Enemy {
   power: number;
   speed: number;
   kind: FullKind;
+  status: Status;
 }
 interface Beam {
   id: string;
@@ -118,7 +125,7 @@ interface Fx {
   y: number;
   born: number;
 }
-type Phase = 'prep' | 'combat' | 'cardpick' | 'gameover' | 'victory';
+type Phase = 'prep' | 'combat' | 'cardpick' | 'event' | 'gameover' | 'victory';
 
 interface DragState {
   source: 'offer' | 'board';
@@ -198,6 +205,12 @@ export default function GamePage() {
   const [finalRank, setFinalRank] = useState<Rank>('D');
   const [combo, setCombo] = useState(0);
   const [mutator, setMutator] = useState<Mutator | null>(null);
+  const [bossMod, setBossMod] = useState<BossMod | null>(null);
+  const [meta, setMeta] = useState<MetaState>(DEFAULT_META);
+  const [dustGain, setDustGain] = useState(0);
+  const [showMeta, setShowMeta] = useState(false);
+  const [showShop, setShowShop] = useState(false);
+  const [gameEvent, setGameEvent] = useState<GameEvent | null>(null);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -231,6 +244,8 @@ export default function GamePage() {
   const freezeUntilRef = useRef(0);
   const comboRef = useRef<ComboState>(EMPTY_COMBO);
   const mutatorRef = useRef<Mutator | null>(null);
+  const bossModRef = useRef<BossMod | null>(null);
+  const metaRef = useRef(meta);
   const settingsLoadedRef = useRef(false);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0, gaugeMul: 1 });
   const enemiesRef = useRef<Enemy[]>([]);
@@ -248,6 +263,23 @@ export default function GamePage() {
   useEffect(() => void (difficultyRef.current = difficulty), [difficulty]);
   useEffect(() => void (targetModeRef.current = targetMode), [targetMode]);
   useEffect(() => void (endlessRef.current = endless), [endless]);
+  useEffect(() => void (metaRef.current = meta), [meta]);
+
+  /* ----- メタ進行（星屑）の読み込み・保存 ----- */
+  useEffect(() => {
+    try {
+      setMeta(parseMeta(window.localStorage.getItem(META_KEY)));
+    } catch {
+      /* noop */
+    }
+  }, []);
+  const saveMeta = useCallback((m: MetaState) => {
+    try {
+      window.localStorage.setItem(META_KEY, serializeMeta(m));
+    } catch {
+      /* noop */
+    }
+  }, []);
 
   const codex = useMemo(() => fullCodex(), []);
 
@@ -309,6 +341,15 @@ export default function GamePage() {
       const score = runScore({ wave: finalWave, kills: killsRef.current, damage: damageRef.current, won });
       setFinalScore(score);
       setFinalRank(starRank(score));
+      const dust = dustReward(score);
+      setDustGain(dust);
+      if (dust > 0) {
+        setMeta((m) => {
+          const nm = { ...m, dust: m.dust + dust };
+          saveMeta(nm);
+          return nm;
+        });
+      }
       const rec: RunRecord = { wave: finalWave, kills: killsRef.current, damage: damageRef.current, won, ts: Date.now() };
       let prevRuns: RunRecord[] = [];
       try {
@@ -341,7 +382,7 @@ export default function GamePage() {
       }
       setNewAch(fresh.map((id) => ACHIEVEMENTS.find((a) => a.id === id)?.title).filter((t): t is string => Boolean(t)));
     },
-    [recordBest],
+    [recordBest, saveMeta],
   );
 
   /* ----- 被弾フラッシュの自動解除 ----- */
@@ -407,7 +448,7 @@ export default function GamePage() {
   const onUnitPointerDown = useCallback(
     (e: React.PointerEvent, source: 'offer' | 'board', unit: Unit, offerIndex?: number, cellKey?: string) => {
       const p = phaseRef.current;
-      if (p === 'gameover' || p === 'victory' || p === 'cardpick') return;
+      if (p === 'gameover' || p === 'victory' || p === 'cardpick' || p === 'event') return;
       e.preventDefault();
       e.stopPropagation();
       try {
@@ -531,11 +572,16 @@ export default function GamePage() {
     const mut = mutatorForWave(wave);
     mutatorRef.current = mut;
     setMutator(mut);
+    const bm = wave % 5 === 0 ? bossModForWave(wave) : null;
+    bossModRef.current = bm;
+    setBossMod(bm);
     let acc = -1;
     const list: Enemy[] = composeWave(wave).map((s) => {
       acc -= s.kind === 'boss' ? 1.6 : 1.2;
       const eh = Math.round(scaledEnemyHp(s.hp, mode) * hpMul * mut.hpMul);
-      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.round(scaledEnemyPower(s.power, mode) * powMul), speed: s.speed * mut.speedMul, kind: s.kind };
+      let sp = s.speed * mut.speedMul;
+      if (s.kind === 'boss' && bm) sp = hasteSpeed(sp, bm);
+      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.round(scaledEnemyPower(s.power, mode) * powMul), speed: sp, kind: s.kind, status: NO_STATUS };
     });
     enemiesRef.current = list;
     beamsRef.current = [];
@@ -577,14 +623,26 @@ export default function GamePage() {
       let dmgAdd = 0;
       let goldAdd = 0;
 
-      // 歪みの移動・到達（時間停止中は静止）
+      // 歪みの移動・到達（時間停止中は静止／燃焼・鈍足・ボス再生を反映）
+      const bmNow = bossModRef.current;
       const alive: Enemy[] = [];
       for (const e of enemiesRef.current) {
-        if (frozen) {
-          alive.push(e);
+        let ehp = e.hp;
+        if (e.kind === 'boss' && bmNow === 'regen') ehp = Math.min(e.maxHp, ehp + regenAmount(e.maxHp, dt));
+        const burn = burnTick(e.status, now, dt * 1000);
+        if (burn > 0) {
+          ehp -= burn;
+          dmgAdd += burn;
+        }
+        if (ehp <= 0) {
+          alive.push({ ...e, hp: ehp });
           continue;
         }
-        const pos = e.pos + e.speed * dt;
+        if (frozen) {
+          alive.push({ ...e, hp: ehp });
+          continue;
+        }
+        const pos = e.pos + e.speed * speedMul(e.status, now) * dt;
         if (pos >= PATH.length) {
           hpNow -= e.power;
           popArr.push({ id: nextId('p'), x: 50, y: 99, value: e.power, kind: 'hurt', born: now });
@@ -593,7 +651,7 @@ export default function GamePage() {
           vibrate('hurt');
           continue;
         }
-        alive.push({ ...e, pos });
+        alive.push({ ...e, hp: ehp, pos });
       }
 
       // 編成シナジーを反映した実効係数
@@ -628,10 +686,13 @@ export default function GamePage() {
           const target = chosen ? byId.get(chosen.id) : undefined;
           const tc = chosen ? cellById.get(chosen.id) : undefined;
           if (chosen && target && tc) {
-            const dmg = Math.round(unitAtk(u.type, u.level) * atkMul);
+            let dmg = Math.round(unitAtk(u.type, u.level) * atkMul * vulnMul(target.status, now));
+            if (target.kind === 'boss' && bmNow === 'bulwark') dmg = damageThrough(dmg, 'bulwark');
             target.hp -= dmg;
             dmgAdd += dmg;
             gNow = addGauge(gNow, dmg * mod.gaugeMul);
+            const eid = effectForInstrument(u.type);
+            if (eid) target.status = applyEffect(target.status, eid, now);
             beamArr.push({ id: nextId('b'), x1: pctX(uc), y1: pctY(ur), x2: pctX(tc.c), y2: pctY(tc.r), born: now });
             popArr.push({ id: nextId('p'), x: pctX(tc.c), y: pctY(tc.r), value: dmg, kind: 'hit', born: now });
             cd = TYPES[u.type].fireMs * fireMul;
@@ -798,22 +859,106 @@ export default function GamePage() {
       }
       summonFree();
       setRerolls(0);
-      setWave((w) => w + 1);
-      setPhase('prep');
-      setStatus('盤を整え、次の歪みを迎え撃て。');
+      const nw = waveRef.current + 1;
+      setWave(nw);
+      const ev = eventForWave(nw);
+      if (ev) {
+        setGameEvent(ev);
+        setPhase('event');
+        setStatus('道中、奇縁に出会した。一つを選べ。');
+      } else {
+        setPhase('prep');
+        setStatus('盤を整え、次の歪みを迎え撃て。');
+      }
     },
     [summonFree],
+  );
+
+  /* ----- 道中イベントの選択 ----- */
+  const resolveEvent = useCallback(
+    (opt: EventOption) => {
+      const eff = opt.effect;
+      if (eff.gold) setGold((g) => Math.max(0, g + eff.gold!));
+      if (eff.atkMul) modRef.current.atkMul *= eff.atkMul;
+      if (eff.healFrac) {
+        const heal = Math.round(maxHp * eff.healFrac);
+        setHp((h) => {
+          const nh = Math.min(maxHp, h + heal);
+          hpRef.current = nh;
+          return nh;
+        });
+      }
+      if (eff.maxHpBonus) {
+        setMaxHp((m) => {
+          const nm = m + eff.maxHpBonus!;
+          setHp((h) => {
+            const nh = h + eff.maxHpBonus!;
+            hpRef.current = nh;
+            return nh;
+          });
+          return nm;
+        });
+      }
+      setGameEvent(null);
+      setPhase('prep');
+      setStatus('選択は星譜に刻まれた。');
+    },
+    [maxHp],
+  );
+
+  /* ----- 消耗品ショップ ----- */
+  const buyShop = useCallback(
+    (id: ShopItemId) => {
+      if (phase === 'combat') return;
+      if (!canAfford(gold, id)) {
+        setStatus('対価が足りない。');
+        return;
+      }
+      setGold((g) => g - SHOP_ITEMS[id].cost);
+      const eff = shopEffect(id);
+      if (eff.atkMul) modRef.current.atkMul *= eff.atkMul;
+      if (eff.rangeBonus) modRef.current.rangeBonus += eff.rangeBonus;
+      if (eff.gaugeFill) {
+        gaugeRef.current = GAUGE_MAX;
+        setGauge(GAUGE_MAX);
+      }
+      if (eff.healFrac) {
+        const heal = Math.round(maxHp * eff.healFrac);
+        setHp((h) => {
+          const nh = Math.min(maxHp, h + heal);
+          hpRef.current = nh;
+          return nh;
+        });
+      }
+      playSfx('place');
+      setStatus(`${SHOP_ITEMS[id].name} を用いた。`);
+    },
+    [phase, gold, maxHp],
+  );
+
+  /* ----- メタ強化（星屑） ----- */
+  const buyMeta = useCallback(
+    (id: (typeof META_LIST)[number]['id']) => {
+      setMeta((m) => {
+        if (!canBuy(m, id)) return m;
+        const nm = buyUpgrade(m, id);
+        saveMeta(nm);
+        return nm;
+      });
+    },
+    [saveMeta],
   );
 
   /* ----- 走行開始（難易度＋遺物確定） ----- */
   const beginRun = useCallback((mode: Difficulty, chosen: Relic) => {
     const eff = relicEffect(chosen.id);
+    const mb = metaBonuses(metaRef.current);
     setDifficulty(mode);
     difficultyRef.current = mode;
     setRelic(chosen);
-    modRef.current = { atkMul: eff.atkMul ?? 1, fireMul: eff.fireMul ?? 1, rangeBonus: eff.rangeBonus ?? 0, gaugeMul: eff.gaugeMul ?? 1 };
+    modRef.current = { atkMul: (eff.atkMul ?? 1) * mb.atkMul, fireMul: (eff.fireMul ?? 1) * mb.fireMul, rangeBonus: eff.rangeBonus ?? 0, gaugeMul: eff.gaugeMul ?? 1 };
     sellBonusRef.current = eff.sellBonus ?? 1;
-    const nmax = MAX_HP + (eff.maxHpBonus ?? 0);
+    const nmax = MAX_HP + (eff.maxHpBonus ?? 0) + mb.maxHpBonus;
     cdRef.current = new Map();
     enemiesRef.current = [];
     beamsRef.current = [];
@@ -825,15 +970,19 @@ export default function GamePage() {
     freezeUntilRef.current = 0;
     comboRef.current = EMPTY_COMBO;
     mutatorRef.current = null;
+    bossModRef.current = null;
     endlessRef.current = false;
     setEndless(false);
     setCombo(0);
     setMutator(null);
+    setBossMod(null);
+    setGameEvent(null);
+    setDustGain(0);
     setIntro(false);
     setIntroStep('difficulty');
     setPhase('prep');
     setWave(1);
-    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0));
+    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold);
     setHp(nmax);
     setMaxHp(nmax);
     setKills(0);
@@ -867,6 +1016,9 @@ export default function GamePage() {
     setIntroStep('difficulty');
     setEndless(false);
     setNewAch([]);
+    setGameEvent(null);
+    setBossMod(null);
+    setMutator(null);
     setStatus('難易度と遺物を選び、再び歪みを迎え撃て。');
   }, []);
 
@@ -933,6 +1085,9 @@ export default function GamePage() {
               <Pill icon="🧭" value={`${gold}`} accent />
               <Pill icon="✦" value={`${wave}${endless ? '' : `/${TOTAL_WAVES}`}`} />
               <Pill icon="⚔" value={abbrev(kills)} />
+              {!combat && phase !== 'gameover' && phase !== 'victory' && (
+                <button type="button" onClick={() => setShowShop(true)} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="shop">🛒</button>
+              )}
               <button type="button" onClick={() => setShowCodex(true)} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="codex">📖</button>
               <button type="button" onClick={toggleMute} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/50 text-[13px] transition-colors hover:border-amber-500/50 active:scale-95" aria-label="mute">{muted ? '🔇' : '🔊'}</button>
             </div>
@@ -1045,9 +1200,14 @@ export default function GamePage() {
               </div>
             )}
 
-            {combat && mutator && mutator.id !== 'calm' && (
-              <div className="pointer-events-none absolute right-2 top-2 rounded-md border border-amber-500/40 bg-neutral-950/70 px-2 py-1 font-ritual text-[10px] text-amber-200" style={{ zIndex: 26 }}>
-                {mutator.icon} {mutator.name}
+            {combat && (mutator?.id !== 'calm' || bossMod) && (
+              <div className="pointer-events-none absolute right-2 top-2 flex flex-col items-end gap-1" style={{ zIndex: 26 }}>
+                {mutator && mutator.id !== 'calm' && (
+                  <span className="rounded-md border border-amber-500/40 bg-neutral-950/70 px-2 py-1 font-ritual text-[10px] text-amber-200">{mutator.icon} {mutator.name}</span>
+                )}
+                {bossMod && (
+                  <span className="rounded-md border border-rose-400/50 bg-neutral-950/70 px-2 py-1 font-ritual text-[10px] text-rose-200">{BOSS_MODS[bossMod].icon} {BOSS_MODS[bossMod].name}</span>
+                )}
               </div>
             )}
 
@@ -1084,6 +1244,7 @@ export default function GamePage() {
                       <li>③ 出撃で自動射撃 ④ 観測官HPが0で陥落</li>
                       <li>⑤ 波クリアで星位カード ⑥ ゲージ満タンで必殺</li>
                     </ul>
+                    <button type="button" onClick={() => setShowMeta(true)} className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-1.5 font-ritual text-[11px] tracking-wide text-amber-200 transition-all duration-200 hover:border-amber-300/70 hover:bg-amber-400/15 active:scale-95">🌌 星屑強化（{meta.dust}）</button>
                   </>
                 ) : (
                   <>
@@ -1127,7 +1288,7 @@ export default function GamePage() {
                 <p className="font-mono text-sm text-amber-300">{finalRank} ・ {finalScore} pts</p>
                 <p className="font-ritual text-[11px] text-amber-200/70">{rankLabel(finalRank)}</p>
                 <p className="max-w-[16rem] font-ritual text-[11px] leading-relaxed text-stone-400">
-                  撃破 {abbrev(kills)} ・ 累計 {abbrev(damage)} ・ 最高 第 {Math.max(best, wave - 1)} 波
+                  撃破 {abbrev(kills)} ・ 累計 {abbrev(damage)} ・ 最高 第 {Math.max(best, wave - 1)} 波{dustGain > 0 ? ` ・ 星屑 🌌+${dustGain}` : ''}
                 </p>
                 {newAch.length > 0 && (
                   <div className="flex max-w-[18rem] flex-wrap items-center justify-center gap-1">
@@ -1161,6 +1322,73 @@ export default function GamePage() {
                   <CodexSection title="歪み" entries={codex.enemies} />
                   <CodexSection title="必殺" entries={codex.ultimates} />
                   <CodexSection title="ロア" entries={loreCodex()} />
+                </div>
+              </div>
+            )}
+
+            {/* ===== 道中イベント ===== */}
+            {phase === 'event' && gameEvent && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/90 px-4 text-center backdrop-blur-sm" style={{ zIndex: 44 }}>
+                <span className="text-3xl drop-shadow-[0_0_10px_rgba(205,167,54,0.6)]">{gameEvent.icon}</span>
+                <p className="font-display text-base tracking-wide text-stone-100">{gameEvent.title}</p>
+                <p className="max-w-[18rem] font-ritual text-[11px] leading-relaxed text-stone-400">{gameEvent.body}</p>
+                <div className="flex w-full flex-col gap-2">
+                  {gameEvent.options.map((o, i) => (
+                    <button key={i} type="button" onClick={() => resolveEvent(o)} className="gs-card rounded-lg border border-amber-500/40 bg-gradient-to-b from-amber-950/40 to-neutral-950/80 px-3 py-2 text-left transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_20px_rgba(205,167,54,0.35)]">
+                      <span className="font-ritual text-[12px] text-amber-100">{o.label}</span>
+                      <span className="ml-2 font-ritual text-[10px] text-stone-400">{o.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ===== 消耗品ショップ ===== */}
+            {showShop && (
+              <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/94 backdrop-blur-sm" style={{ zIndex: 62 }}>
+                <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
+                  <p className="font-display text-base tracking-wide text-stone-100">調達 <span className="ml-2 font-mono text-[11px] text-amber-300">🧭{gold}</span></p>
+                  <button type="button" onClick={() => setShowShop(false)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm text-amber-200 active:scale-95">✕</button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
+                  {SHOP_LIST.map((it) => (
+                    <button key={it.id} type="button" onClick={() => buyShop(it.id)} disabled={!canAfford(gold, it.id)} className="flex w-full items-center gap-2 rounded-md border border-amber-700/25 bg-neutral-900/40 p-2 text-left transition-all hover:border-amber-500/50 active:scale-[0.99] disabled:opacity-40">
+                      <span className="text-xl">{it.icon}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-ritual text-[12px] text-amber-100">{it.name}</p>
+                        <p className="font-ritual text-[10px] text-stone-400">{it.desc}</p>
+                      </div>
+                      <span className="font-mono text-[11px] text-amber-300">{it.cost}G</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ===== 星屑強化（メタ進行） ===== */}
+            {showMeta && (
+              <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/94 backdrop-blur-sm" style={{ zIndex: 62 }}>
+                <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
+                  <p className="font-display text-base tracking-wide text-stone-100">星屑強化 <span className="ml-2 font-mono text-[11px] text-amber-300">🌌{meta.dust}</span></p>
+                  <button type="button" onClick={() => setShowMeta(false)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm text-amber-200 active:scale-95">✕</button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
+                  {META_LIST.map((up) => {
+                    const lv = meta.levels[up.id];
+                    const cost = upgradeCost(up.id, lv);
+                    const maxed = lv >= up.maxLevel;
+                    return (
+                      <div key={up.id} className="flex items-center gap-2 rounded-md border border-amber-700/25 bg-neutral-900/40 p-2">
+                        <span className="text-xl">{up.icon}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-ritual text-[12px] text-amber-100">{up.name} <span className="text-stone-500">Lv{lv}/{up.maxLevel}</span></p>
+                          <p className="font-ritual text-[10px] text-stone-400">{up.desc}</p>
+                        </div>
+                        <button type="button" onClick={() => buyMeta(up.id)} disabled={maxed || !canBuy(meta, up.id)} className="flex-shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 font-mono text-[10px] text-amber-200 active:scale-95 disabled:opacity-40">{maxed ? 'MAX' : `🌌${cost}`}</button>
+                      </div>
+                    );
+                  })}
+                  <p className="pt-1 text-center font-ritual text-[9px] text-stone-500">星屑は走行終了時のスコアに応じて獲得。次の走行から強化が反映される。</p>
                 </div>
               </div>
             )}
@@ -1229,7 +1457,7 @@ export default function GamePage() {
             </button>
 
             {!combat ? (
-              <button type="button" onClick={startWave} disabled={intro || phase === 'cardpick' || phase === 'gameover' || phase === 'victory'} className="flex h-11 flex-[1.4] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
+              <button type="button" onClick={startWave} disabled={intro || phase === 'cardpick' || phase === 'event' || phase === 'gameover' || phase === 'victory'} className="flex h-11 flex-[1.4] items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-gradient-to-b from-amber-500/20 to-amber-600/5 font-display text-sm uppercase tracking-[0.16em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_24px_rgba(205,167,54,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35">
                 <span className="gs-twinkle text-amber-300">✦</span> 第 {wave} 波 出撃
               </button>
             ) : (
