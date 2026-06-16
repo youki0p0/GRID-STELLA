@@ -126,6 +126,11 @@ src/
       settings.ts       #   persisted preferences (mute / target mode / difficulty)
       lore.ts           #   world lore entries + boss intro lines
       format.ts         #   compact number / percent formatting
+      effects.ts        #   status effects (burn / slow / weaken) on enemies
+      shop.ts           #   between-wave consumable shop catalog
+      events.ts         #   between-wave random risk/reward events
+      prestige.ts       #   cross-run meta progression (star dust upgrades)
+      bosses.ts         #   boss modifiers (regen / haste / bulwark)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
