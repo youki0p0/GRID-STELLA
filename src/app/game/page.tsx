@@ -74,6 +74,7 @@ import { Collection, DEFAULT_COLLECTION, MAX_FAVORITES, lockedTypes, parseCollec
 import { PITY, PULL_COST, Pull, canPull, nextPity, rollPull } from '@/lib/merge/gacha';
 import { TRIALS, Trial, TrialProgress, DEFAULT_TRIAL_PROGRESS, attemptsLeft, parseTrials, rolloverIfNewDay, serializeTrials, spendAttempt, trialReward } from '@/lib/merge/trials';
 import { IdleState, accrued, claim as idleClaim, fillPct, parseIdle, serializeIdle } from '@/lib/merge/idle';
+import { DEFAULT_EQUIP, EQUIP_N, EquipBoard, GEAR_BONUS, GearPiece, canEquip, equipBonuses, equipCells, parseEquip, serializeEquip } from '@/lib/merge/equip';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
@@ -86,6 +87,7 @@ const STAGE_KEY = 'gs-stages';
 const TRIAL_KEY = 'gs-trials';
 const IDLE_KEY = 'gs-idle';
 const RESERVE_KEY = 'gs-reserve';
+const EQUIP_KEY = 'gs-equip';
 const STARTER_RELICS: RelicId[] = ['lens', 'sextant', 'aegis', 'ledger'];
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -157,14 +159,15 @@ function occupancyOf(board: Board, ignore?: string): Map<string, string> {
   }
   return m;
 }
-function pieceBox(p: Piece) {
-  const cells = pieceCells(p);
+function boxOf(cells: { r: number; c: number }[]) {
   const rs = cells.map((x) => x.r);
   const cs = cells.map((x) => x.c);
   const minR = Math.min(...rs);
   const minC = Math.min(...cs);
   return { minR, minC, w: Math.max(...cs) - minC + 1, h: Math.max(...rs) - minR + 1 };
 }
+const pieceBox = (p: Piece) => boxOf(pieceCells(p));
+const gearBox = (p: GearPiece) => boxOf(equipCells(p));
 function firstFit(board: Board, type: TypeId, n: number): { rot: Rot; anchor: { r: number; c: number } } | null {
   const occ = new Set(occupancyOf(board).keys());
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (shapeCanPlace(SHAPES[type], 0, { r, c }, n, occ)) return { rot: 0, anchor: { r, c } };
@@ -296,7 +299,7 @@ export default function GamePage() {
 
   // ---- ロビー/メタ層 ----
   const [home, setHome] = useState(true);
-  const [lobbyView, setLobbyView] = useState<'home' | 'stages' | 'collection' | 'gacha' | 'trials' | 'idle'>('home');
+  const [lobbyView, setLobbyView] = useState<'home' | 'stages' | 'collection' | 'gacha' | 'trials' | 'idle' | 'equip'>('home');
   const [collection, setCollection] = useState<Collection>(DEFAULT_COLLECTION);
   const [relicUnlocks, setRelicUnlocks] = useState<RelicId[]>(STARTER_RELICS);
   const [stageProgress, setStageProgress] = useState<StageProgress>(DEFAULT_PROGRESS);
@@ -308,6 +311,8 @@ export default function GamePage() {
   const [targetWaves, setTargetWaves] = useState(TOTAL_WAVES);
   const [pendingStage, setPendingStage] = useState<StageDef | null>(null);
   const [trialId, setTrialId] = useState<string | null>(null);
+  const [equip, setEquip] = useState<EquipBoard>(DEFAULT_EQUIP);
+  const [equipDrag, setEquipDrag] = useState<{ source: 'inv' | 'board'; type: TypeId; uid?: string; rot: Rot; x: number; y: number; sx: number; sy: number; moved: boolean; hover: { r: number; c: number; key: string } | null } | null>(null);
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -350,6 +355,9 @@ export default function GamePage() {
   const pendingStageRef = useRef<StageDef | null>(null);
   const pityRef = useRef(0);
   const reserveRef = useRef(0);
+  const equipRef = useRef(equip);
+  const equipDragRef = useRef(equipDrag);
+  const equipBoardElRef = useRef<HTMLDivElement>(null);
   const settingsLoadedRef = useRef(false);
   const modRef = useRef({ atkMul: 1, fireMul: 1, rangeBonus: 0, gaugeMul: 1 });
   const enemiesRef = useRef<Enemy[]>([]);
@@ -374,6 +382,8 @@ export default function GamePage() {
   useEffect(() => void (reserveRef.current = reserve), [reserve]);
   useEffect(() => void (pityRef.current = pity), [pity]);
   useEffect(() => void (pendingStageRef.current = pendingStage), [pendingStage]);
+  useEffect(() => void (equipRef.current = equip), [equip]);
+  useEffect(() => void (equipDragRef.current = equipDrag), [equipDrag]);
 
   /* ----- メタ層の読み込み ----- */
   useEffect(() => {
@@ -385,6 +395,7 @@ export default function GamePage() {
       setTrialProg(rolloverIfNewDay(parseTrials(window.localStorage.getItem(TRIAL_KEY)), todayStr()));
       setIdle(parseIdle(window.localStorage.getItem(IDLE_KEY), now));
       setReserve(Math.max(0, Number(window.localStorage.getItem(RESERVE_KEY) || '0')));
+      setEquip(parseEquip(window.localStorage.getItem(EQUIP_KEY)));
       const ru: unknown = JSON.parse(window.localStorage.getItem(RELICUNLOCK_KEY) || 'null');
       if (Array.isArray(ru)) {
         const valid = ru.filter((x): x is RelicId => typeof x === 'string' && x in RELICS);
@@ -473,6 +484,7 @@ export default function GamePage() {
         const tr = TRIALS.find((t) => t.id === tid);
         if (tr) dust += trialReward(tr, damageRef.current);
       }
+      dust = Math.round(dust * equipBonuses(equipRef.current).dustMul);
       setDustGain(dust);
       if (dust > 0) {
         setMeta((m) => {
@@ -713,8 +725,8 @@ export default function GamePage() {
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== 'r' && ev.key !== 'R') return;
-      if (!dragRef.current) return;
-      setDrag((d) => (d ? { ...d, rot: ROT_NEXT[d.rot], moved: true } : d));
+      if (dragRef.current) setDrag((d) => (d ? { ...d, rot: ROT_NEXT[d.rot], moved: true } : d));
+      else if (equipDragRef.current) setEquipDrag((d) => (d ? { ...d, rot: ROT_NEXT[d.rot], moved: true } : d));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1150,12 +1162,13 @@ export default function GamePage() {
   const beginRun = useCallback((mode: Difficulty, chosen: Relic) => {
     const eff = relicEffect(chosen.id);
     const mb = metaBonuses(metaRef.current);
+    const eb = equipBonuses(equipRef.current);
     setDifficulty(mode);
     difficultyRef.current = mode;
     setRelic(chosen);
-    modRef.current = { atkMul: (eff.atkMul ?? 1) * mb.atkMul, fireMul: (eff.fireMul ?? 1) * mb.fireMul, rangeBonus: eff.rangeBonus ?? 0, gaugeMul: eff.gaugeMul ?? 1 };
-    sellBonusRef.current = eff.sellBonus ?? 1;
-    const nmax = MAX_HP + (eff.maxHpBonus ?? 0) + mb.maxHpBonus;
+    modRef.current = { atkMul: (eff.atkMul ?? 1) * mb.atkMul * eb.atkMul, fireMul: (eff.fireMul ?? 1) * mb.fireMul * eb.fireMul, rangeBonus: (eff.rangeBonus ?? 0) + eb.rangeBonus, gaugeMul: eff.gaugeMul ?? 1 };
+    sellBonusRef.current = (eff.sellBonus ?? 1) * eb.sellBonus;
+    const nmax = MAX_HP + (eff.maxHpBonus ?? 0) + mb.maxHpBonus + eb.maxHpBonus;
     cdRef.current = new Map();
     enemiesRef.current = [];
     beamsRef.current = [];
@@ -1179,7 +1192,7 @@ export default function GamePage() {
     setIntroStep('difficulty');
     setPhase('prep');
     setWave(1);
-    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold + reserveRef.current);
+    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold + eb.startGold + reserveRef.current);
     if (reserveRef.current > 0) {
       setReserve(0);
       reserveRef.current = 0;
@@ -1335,6 +1348,88 @@ export default function GamePage() {
     setIntro(true);
     setIntroStep('difficulty');
   }, []);
+
+  /* ----- 装備盤（観測装）のドラッグ ----- */
+  const commitEquip = useCallback(
+    (next: EquipBoard) => {
+      setEquip(next);
+      equipRef.current = next;
+      persist(EQUIP_KEY, serializeEquip(next));
+    },
+    [persist],
+  );
+
+  const cellFromEquipPoint = useCallback((x: number, y: number) => {
+    const el = equipBoardElRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
+    const c = Math.min(EQUIP_N - 1, Math.max(0, Math.floor(((x - rect.left) / rect.width) * EQUIP_N)));
+    const r = Math.min(EQUIP_N - 1, Math.max(0, Math.floor(((y - rect.top) / rect.height) * EQUIP_N)));
+    return { r, c, key: keyOf(r, c) };
+  }, []);
+
+  const onEquipDown = useCallback(
+    (e: React.PointerEvent, source: 'inv' | 'board', type: TypeId, uid?: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        /* noop */
+      }
+      const piece = source === 'board' && uid ? equipRef.current[uid] : null;
+      setEquipDrag({ source, type, uid, rot: piece ? piece.rot : 0, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, hover: cellFromEquipPoint(e.clientX, e.clientY) });
+    },
+    [cellFromEquipPoint],
+  );
+
+  const onEquipMove = useCallback(
+    (e: React.PointerEvent) => {
+      const cur = equipDragRef.current;
+      if (!cur) return;
+      e.preventDefault();
+      const hover = cellFromEquipPoint(e.clientX, e.clientY);
+      const moved = cur.moved || Math.hypot(e.clientX - cur.sx, e.clientY - cur.sy) > 7;
+      setEquipDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY, moved, hover } : d));
+    },
+    [cellFromEquipPoint],
+  );
+
+  const onEquipUp = useCallback(
+    (e: React.PointerEvent) => {
+      const d = equipDragRef.current;
+      if (!d) return;
+      e.preventDefault();
+      setEquipDrag(null);
+      if (d.source === 'board' && d.uid && !d.moved) {
+        const pc = equipRef.current[d.uid];
+        if (pc && canEquip(equipRef.current, pc.type, ROT_NEXT[pc.rot], pc.anchor, pc.uid)) {
+          commitEquip({ ...equipRef.current, [pc.uid]: { ...pc, rot: ROT_NEXT[pc.rot] } });
+        }
+        return;
+      }
+      const cell = cellFromEquipPoint(e.clientX, e.clientY);
+      if (!cell) {
+        if (d.source === 'board' && d.uid) {
+          const next = { ...equipRef.current };
+          delete next[d.uid];
+          commitEquip(next);
+        }
+        return;
+      }
+      const ignore = d.source === 'board' ? d.uid : undefined;
+      if (canEquip(equipRef.current, d.type, d.rot, cell, ignore)) {
+        if (d.source === 'board' && d.uid) {
+          commitEquip({ ...equipRef.current, [d.uid]: { ...equipRef.current[d.uid], rot: d.rot, anchor: { r: cell.r, c: cell.c } } });
+        } else {
+          const uid = nextId('gp');
+          commitEquip({ ...equipRef.current, [uid]: { uid, type: d.type, rot: d.rot, anchor: { r: cell.r, c: cell.c } } });
+        }
+      }
+    },
+    [cellFromEquipPoint, commitEquip],
+  );
 
   const toggleMute = useCallback(() => {
     setMutedState((m) => {
@@ -1726,7 +1821,7 @@ export default function GamePage() {
               <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/95 backdrop-blur-sm" style={{ zIndex: 55 }}>
                 <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
                   <div>
-                    <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : '放置観測'}</p>
+                    <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : lobbyView === 'equip' ? '観測装 ・ 装備盤' : '放置観測'}</p>
                     <p className="font-mono text-[10px] text-amber-300/70">🌌{meta.dust} ・ 🪙貯蓄{reserve} ・ 最高{best}波</p>
                   </div>
                   {lobbyView !== 'home' ? (
@@ -1744,6 +1839,7 @@ export default function GamePage() {
                         { k: 'quick', icon: '⚡', label: 'クイック出撃', sub: '難易度即決', on: quickPlay },
                         { k: 'gacha', icon: '🎰', label: '召喚', sub: '星屑で解放', on: () => setLobbyView('gacha') },
                         { k: 'col', icon: '📚', label: 'コレクション', sub: '編成・お気に入り', on: () => setLobbyView('collection') },
+                        { k: 'equip', icon: '🛡', label: '観測装', sub: '装備パズル盤', on: () => setLobbyView('equip') },
                         { k: 'trial', icon: '⚔', label: '試練の道', sub: 'ダメージ目標', on: () => setLobbyView('trials') },
                         { k: 'idle', icon: '💤', label: '放置観測', sub: '時間で収益', on: () => setLobbyView('idle') },
                         { k: 'meta', icon: '🌌', label: '星屑強化', sub: '恒久upgrade', on: () => setShowMeta(true) },
@@ -1861,6 +1957,81 @@ export default function GamePage() {
                       <p className="font-ritual text-[9px] text-stone-500">収益倍率は踏破した観測階の数で上がる（現在 ×{idleMult.toFixed(1)}）。蓄ゴールドは次の出撃の開始資金に加算。</p>
                     </div>
                   )}
+
+                  {lobbyView === 'equip' &&
+                    (() => {
+                      const eb = equipBonuses(equip);
+                      const ignore = equipDrag?.source === 'board' ? equipDrag.uid : undefined;
+                      const eqPrev = (() => {
+                        if (!equipDrag || !equipDrag.hover) return null;
+                        const fc = shapeFootprint(SHAPES[equipDrag.type], equipDrag.rot, equipDrag.hover).filter((x) => x.r >= 0 && x.r < EQUIP_N && x.c >= 0 && x.c < EQUIP_N);
+                        return { cells: new Set(fc.map((c) => keyOf(c.r, c.c))), ok: canEquip(equip, equipDrag.type, equipDrag.rot, equipDrag.hover, ignore) };
+                      })();
+                      const pct = (m: number) => `${m >= 1 ? '+' : ''}${Math.round((m - 1) * 100)}%`;
+                      return (
+                        <div className="flex flex-col items-center gap-3">
+                          <p className="text-center font-ritual text-[10px] text-stone-400">所持器具を盤に嵌めると恒久パッシブが付与され、全走行に反映される。ドラッグで装着 ・ 盤外へ出して解除 ・ タップで回転。</p>
+
+                          {/* 装備盤 4x4 */}
+                          <div ref={equipBoardElRef} className="relative aspect-square w-[min(72vw,260px)] rounded-xl border border-amber-600/30 bg-neutral-950/70 shadow-[inset_0_1px_0_rgba(218,185,79,0.08)]" style={{ touchAction: 'none' }}>
+                            {Array.from({ length: EQUIP_N * EQUIP_N }, (_, i) => {
+                              const r = Math.floor(i / EQUIP_N);
+                              const c = i % EQUIP_N;
+                              const k = keyOf(r, c);
+                              const inPrev = eqPrev?.cells.has(k) ?? false;
+                              const cls = inPrev ? (eqPrev!.ok ? 'border-2 border-emerald-400/80 bg-emerald-400/10' : 'border-2 border-rose-500/80 bg-rose-500/10') : 'border border-amber-600/15 bg-white/[0.012]';
+                              return <div key={k} className={`absolute rounded-md ${cls}`} style={{ left: `${(c / EQUIP_N) * 100}%`, top: `${(r / EQUIP_N) * 100}%`, width: `${(1 / EQUIP_N) * 100}%`, height: `${(1 / EQUIP_N) * 100}%` }} />;
+                            })}
+                            {Object.values(equip).map((p) => {
+                              const box = gearBox(p);
+                              const def = TYPES[p.type];
+                              const cells = equipCells(p);
+                              const dragging = equipDrag?.source === 'board' && equipDrag.uid === p.uid;
+                              return (
+                                <div key={p.uid} onPointerDown={(e) => onEquipDown(e, 'board', p.type, p.uid)} onPointerMove={onEquipMove} onPointerUp={onEquipUp} className={`absolute p-[2%] ${dragging ? 'opacity-30' : 'opacity-100'}`} style={{ left: `${(box.minC / EQUIP_N) * 100}%`, top: `${(box.minR / EQUIP_N) * 100}%`, width: `${(box.w / EQUIP_N) * 100}%`, height: `${(box.h / EQUIP_N) * 100}%`, touchAction: 'none', zIndex: 10 }}>
+                                  <div className="relative h-full w-full cursor-grab active:scale-95">
+                                    {cells.map((cell) => (
+                                      <div key={`${cell.r},${cell.c}`} className={`absolute rounded bg-gradient-to-b ${RARITY_FRAME[def.rarity]} border shadow-[inset_0_1px_0_rgba(218,185,79,0.12)]`} style={{ left: `${((cell.c - box.minC) / box.w) * 100}%`, top: `${((cell.r - box.minR) / box.h) * 100}%`, width: `${(1 / box.w) * 100}%`, height: `${(1 / box.h) * 100}%` }} />
+                                    ))}
+                                    <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 leading-none drop-shadow-[0_0_6px_rgba(205,167,54,0.5)]" style={{ fontSize: 'clamp(14px,5vw,26px)' }}>{def.emoji}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* 付与中のパッシブ */}
+                          <div className="flex w-full flex-wrap items-center justify-center gap-1">
+                            {Math.round((eb.atkMul - 1) * 100) !== 0 && <Tag>攻撃 {pct(eb.atkMul)}</Tag>}
+                            {Math.round((eb.fireMul - 1) * 100) !== 0 && <Tag>連射 {pct(eb.fireMul)}</Tag>}
+                            {eb.rangeBonus > 0 && <Tag>射程 +{eb.rangeBonus.toFixed(1)}</Tag>}
+                            {eb.startGold > 0 && <Tag>初期G +{eb.startGold}</Tag>}
+                            {eb.maxHpBonus > 0 && <Tag>最大HP +{eb.maxHpBonus}</Tag>}
+                            {Math.round((eb.dustMul - 1) * 100) !== 0 && <Tag>星屑 {pct(eb.dustMul)}</Tag>}
+                            {Math.round((eb.sellBonus - 1) * 100) !== 0 && <Tag>売却 {pct(eb.sellBonus)}</Tag>}
+                            {Object.keys(equip).length === 0 && <span className="font-ritual text-[10px] text-stone-600">まだ何も装着していない。</span>}
+                          </div>
+
+                          {/* 所持器具（装着元） */}
+                          <div className="w-full">
+                            <p className="gs-eyebrow mb-1 text-amber-300/70">所持器具</p>
+                            <div className="flex flex-wrap gap-2">
+                              {collection.unlocked.map((t) => {
+                                const def = TYPES[t];
+                                const gb = GEAR_BONUS[t];
+                                return (
+                                  <div key={t} onPointerDown={(e) => onEquipDown(e, 'inv', t)} onPointerMove={onEquipMove} onPointerUp={onEquipUp} className={`flex w-[64px] cursor-grab select-none flex-col items-center rounded-lg border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} p-1.5 active:scale-95`} style={{ touchAction: 'none' }}>
+                                    <span className="text-xl leading-none">{def.emoji}</span>
+                                    <span className="font-ritual text-[9px] text-amber-200/80">{def.name}</span>
+                                    <span className="font-mono text-[7px] text-stone-500">{gb.atkMul ? '攻' : ''}{gb.fireMul ? '速' : ''}{gb.rangeBonus ? '射' : ''}{gb.maxHpBonus ? '盾' : ''}{gb.dustMul ? '屑' : ''}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                 </div>
               </div>
             )}
@@ -1953,6 +2124,11 @@ export default function GamePage() {
           <span className="absolute -bottom-1 right-0 rounded-sm bg-neutral-950/80 px-1 font-mono text-[8px] font-bold text-amber-300">L{drag.unit.level}</span>
         </div>
       )}
+      {equipDrag && (
+        <div className="pointer-events-none fixed z-[70] flex h-11 w-11 items-center justify-center rounded-lg border border-amber-300/70 bg-neutral-900/85 shadow-[0_0_24px_rgba(205,167,54,0.55)]" style={{ left: equipDrag.x, top: equipDrag.y, transform: 'translate(-50%,-115%)' }}>
+          <span className="text-2xl drop-shadow-[0_0_10px_rgba(205,167,54,0.8)]">{TYPES[equipDrag.type].emoji}</span>
+        </div>
+      )}
     </main>
   );
 }
@@ -1967,6 +2143,10 @@ function Pill({ icon, value, accent = false }: { icon: string; value: string; ac
       <span className={`font-mono text-[12px] font-bold tabular-nums ${accent ? 'text-amber-300' : 'text-stone-100'}`}>{value}</span>
     </div>
   );
+}
+
+function Tag({ children }: { children: React.ReactNode }) {
+  return <span className="rounded-full border border-amber-500/40 bg-amber-400/10 px-2 py-0.5 font-ritual text-[10px] text-amber-200">{children}</span>;
 }
 
 function CodexSection({ title, entries }: { title: string; entries: CodexEntry[] }) {
