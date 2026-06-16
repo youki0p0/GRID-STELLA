@@ -78,6 +78,8 @@ import { DEFAULT_EQUIP, EQUIP_N, EquipBoard, GEAR_BONUS, GearPiece, canEquip, eq
 import { DEFAULT_REGALIA, Gear, Regalia, SLOT_LIST, SlotId, combineBonuses, gearById, parseRegalia, regaliaBonuses, serializeRegalia, socketsForRarity } from '@/lib/merge/slots';
 import { GEM_COST, GEM_KINDS, GEMS, Gem, MAX_TIER, gemBonus, gemById, gemLabel, parseGems, serializeGems } from '@/lib/merge/gems';
 import { MAX_STAR, canStarUp, starMul, starUpCost } from '@/lib/merge/stars';
+import { exportSave, importSave, resetSave } from '@/lib/merge/saves';
+import { HELP, randomTip } from '@/lib/merge/help';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
@@ -350,6 +352,10 @@ export default function GamePage() {
   const [gemsOwned, setGemsOwned] = useState<Gem[]>([]);
   const [slotSel, setSlotSel] = useState<SlotId | null>(null);
   const [socketPick, setSocketPick] = useState<{ gearId: string; idx: number } | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showData, setShowData] = useState(false);
+  const [dataText, setDataText] = useState('');
+  const [tip] = useState(() => randomTip());
 
   const [board, setBoard] = useState<Board>({});
   const [offers, setOffers] = useState<(Unit | null)[]>(() => Array.from({ length: OFFER_SLOTS }, () => makeUnit(drawType())));
@@ -822,13 +828,14 @@ export default function GamePage() {
     const bm = wave % 5 === 0 ? bossModForWave(wave) : null;
     bossModRef.current = bm;
     setBossMod(bm);
+    const pace = wave <= 2 ? 0.85 : 1; // 序盤の立ち上がりを少し緩める
     let acc = -1;
     const list: Enemy[] = composeWave(wave).map((s) => {
       acc -= s.kind === 'boss' ? 1.6 : 1.2;
-      const eh = Math.round(scaledEnemyHp(s.hp, mode) * hpMul * mut.hpMul);
+      const eh = Math.max(1, Math.round(scaledEnemyHp(s.hp, mode) * hpMul * mut.hpMul * pace));
       let sp = s.speed * mut.speedMul;
       if (s.kind === 'boss' && bm) sp = hasteSpeed(sp, bm);
-      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.round(scaledEnemyPower(s.power, mode) * powMul), speed: sp, kind: s.kind, status: NO_STATUS };
+      return { id: nextId('e'), pos: acc, hp: eh, maxHp: eh, power: Math.max(1, Math.round(scaledEnemyPower(s.power, mode) * powMul * pace)), speed: sp, kind: s.kind, status: NO_STATUS };
     });
     enemiesRef.current = list;
     beamsRef.current = [];
@@ -1244,7 +1251,7 @@ export default function GamePage() {
     setIntroStep('difficulty');
     setPhase('prep');
     setWave(1);
-    setGold(DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold + eb.startGold + reserveRef.current);
+    setGold(2 + DIFFICULTIES[mode].startGold + (eff.startGold ?? 0) + mb.startGold + eb.startGold + reserveRef.current);
     if (reserveRef.current > 0) {
       setReserve(0);
       reserveRef.current = 0;
@@ -1892,6 +1899,48 @@ export default function GamePage() {
               </div>
             )}
 
+            {/* ===== ヘルプ ===== */}
+            {showHelp && (
+              <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/95 backdrop-blur-sm" style={{ zIndex: 64 }}>
+                <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
+                  <p className="font-display text-base tracking-wide text-stone-100">遊びかた ・ Help</p>
+                  <button type="button" onClick={() => setShowHelp(false)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm text-amber-200 active:scale-95">✕</button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
+                  {HELP.map((sec) => (
+                    <div key={sec.id}>
+                      <p className="gs-eyebrow mb-1 text-amber-300/70">{sec.icon} {sec.title}</p>
+                      <ul className="space-y-1">
+                        {sec.items.map((it, i) => (
+                          <li key={i} className="font-ritual text-[11px] leading-relaxed text-stone-300">・{it}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ===== セーブデータ ===== */}
+            {showData && (
+              <div className="absolute inset-0 flex flex-col rounded-xl bg-neutral-950/95 backdrop-blur-sm" style={{ zIndex: 64 }}>
+                <div className="flex flex-shrink-0 items-center justify-between px-4 pt-3">
+                  <p className="font-display text-base tracking-wide text-stone-100">セーブデータ ・ Data</p>
+                  <button type="button" onClick={() => setShowData(false)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm text-amber-200 active:scale-95">✕</button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
+                  <p className="font-ritual text-[10px] text-stone-400">下の文字列がセーブデータ。コピーで書き出し、貼り付けて取り込みで復元できる。</p>
+                  <textarea value={dataText} onChange={(e) => setDataText(e.target.value)} spellCheck={false} className="h-40 w-full resize-none rounded-md border border-amber-700/30 bg-neutral-900/60 p-2 font-mono text-[10px] text-stone-200 outline-none" style={{ touchAction: 'auto' }} />
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => { try { void navigator.clipboard?.writeText(dataText); setStatus('セーブデータをコピーした。'); } catch { setStatus('コピーできない環境。'); } }} className="flex-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 font-display text-[11px] text-amber-200 active:scale-95">コピー</button>
+                    <button type="button" onClick={() => { try { if (importSave(dataText, (k, v) => window.localStorage.setItem(k, v), (k) => window.localStorage.removeItem(k))) window.location.reload(); else setStatus('セーブデータを読み取れない。'); } catch { setStatus('取り込みに失敗。'); } }} className="flex-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 font-display text-[11px] text-emerald-200 active:scale-95">取り込む</button>
+                  </div>
+                  <button type="button" onClick={() => { try { resetSave((k) => window.localStorage.removeItem(k)); window.location.reload(); } catch { setStatus('消去に失敗。'); } }} className="w-full rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 font-display text-[11px] text-rose-200 active:scale-95">全データを消去（最初から）</button>
+                  <p className="text-center font-ritual text-[9px] text-stone-600">取り込み・消去すると画面が再読み込みされる。</p>
+                </div>
+              </div>
+            )}
+
             {/* ===== 道中イベント ===== */}
             {phase === 'event' && gameEvent && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-neutral-950/90 px-4 text-center backdrop-blur-sm" style={{ zIndex: 44 }}>
@@ -1970,7 +2019,11 @@ export default function GamePage() {
                   {lobbyView !== 'home' ? (
                     <button type="button" onClick={() => setLobbyView('home')} className="rounded-md border border-amber-700/30 bg-neutral-900/60 px-2 py-1 text-[11px] text-amber-200 active:scale-95">← 戻る</button>
                   ) : (
-                    <button type="button" onClick={() => setShowCodex(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">📖</button>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" onClick={() => setShowHelp(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">❓</button>
+                      <button type="button" onClick={() => { setDataText(exportSave((k) => { try { return window.localStorage.getItem(k); } catch { return null; } })); setShowData(true); }} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">💾</button>
+                      <button type="button" onClick={() => setShowCodex(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">📖</button>
+                    </div>
                   )}
                 </div>
 
@@ -1997,6 +2050,7 @@ export default function GamePage() {
                       {idleYield && (idleYield.gold > 0 || idleYield.dust > 0) && (
                         <button type="button" onClick={() => setLobbyView('idle')} className="col-span-2 rounded-lg border border-emerald-400/50 bg-emerald-500/10 p-2 text-center font-ritual text-[11px] text-emerald-200 active:scale-95">💤 放置収益 🪙{idleYield.gold} ・ 🌌{idleYield.dust} を受け取る</button>
                       )}
+                      <p className="col-span-2 mt-1 rounded-md border border-amber-700/20 bg-neutral-900/30 px-3 py-2 text-center font-ritual text-[10px] leading-relaxed text-stone-400">💡 {tip}</p>
                     </div>
                   )}
 

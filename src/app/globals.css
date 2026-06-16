@@ -263,3 +263,18 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ============================================================
+   Accessibility: respect reduced-motion. Disables decorative
+   loops (rose spin, auras, twinkles) and snaps transitions.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
