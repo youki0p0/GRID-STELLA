@@ -306,6 +306,7 @@ export default function GamePage() {
   const [pendingDiff, setPendingDiff] = useState<Difficulty>('standard');
   const [relicChoices, setRelicChoices] = useState<Relic[]>([]);
   const [difficulty, setDifficulty] = useState<Difficulty>('standard');
+  const [homeDiff, setHomeDiff] = useState<Difficulty>('standard');
   const [relic, setRelic] = useState<Relic | null>(null);
   const [wave, setWave] = useState(1);
   const [best, setBest] = useState(0);
@@ -1414,15 +1415,18 @@ export default function GamePage() {
     [trialProg, persist],
   );
 
-  const quickPlay = useCallback(() => {
+  // ホームの難易度を選んで直接 遺物選択へ（標準/エリート風）
+  const startWithDiff = useCallback((mode: Difficulty) => {
     setPendingStage(null);
     setTrialId(null);
     trialIdRef.current = null;
     setTargetWaves(TOTAL_WAVES);
     targetWavesRef.current = TOTAL_WAVES;
+    setPendingDiff(mode);
+    setRelicChoices(pickUnlockedRelics(relicUnlocksRef.current, 3));
     setHome(false);
     setIntro(true);
-    setIntroStep('difficulty');
+    setIntroStep('relic');
   }, []);
 
   /* ----- 装備盤（観測装）のドラッグ ----- */
@@ -2051,43 +2055,65 @@ export default function GamePage() {
                     <p className="font-display text-base tracking-wide text-stone-100">{lobbyView === 'home' ? '観測局' : lobbyView === 'stages' ? '出撃 ・ 観測階' : lobbyView === 'collection' ? '器具庫' : lobbyView === 'gacha' ? '召喚 ・ 星の恵み' : lobbyView === 'trials' ? '試練の道' : lobbyView === 'equip' ? '観測装 ・ 装備盤' : lobbyView === 'regalia' ? '宝物庫 ・ 部位装備' : '放置観測'}</p>
                     <p className="font-mono text-[10px] text-amber-300/70">🌌{meta.dust} ・ 🪙貯蓄{reserve} ・ 最高{best}波</p>
                   </div>
-                  {lobbyView !== 'home' ? (
-                    <button type="button" onClick={() => setLobbyView('home')} className="rounded-md border border-amber-700/30 bg-neutral-900/60 px-2 py-1 text-[11px] text-amber-200 active:scale-95">← 戻る</button>
-                  ) : (
-                    <div className="flex items-center gap-1.5">
-                      <button type="button" onClick={() => setShowHelp(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">❓</button>
-                      <button type="button" onClick={() => { setDataText(exportSave((k) => { try { return window.localStorage.getItem(k); } catch { return null; } })); setShowData(true); }} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">💾</button>
-                      <button type="button" onClick={() => setShowCodex(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">📖</button>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => setShowHelp(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">❓</button>
+                    <button type="button" onClick={() => { setDataText(exportSave((k) => { try { return window.localStorage.getItem(k); } catch { return null; } })); setShowData(true); }} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">💾</button>
+                    <button type="button" onClick={() => setShowCodex(true)} className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-700/30 bg-neutral-900/60 text-sm active:scale-95">📖</button>
+                  </div>
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" style={{ touchAction: 'pan-y' }}>
-                  {lobbyView === 'home' && (
-                    <div className="grid grid-cols-2 gap-2.5">
-                      {([
-                        { k: 'play', icon: '▶', label: '出撃', sub: '観測階を選ぶ', on: () => setLobbyView('stages') },
-                        { k: 'quick', icon: '⚡', label: 'クイック出撃', sub: '難易度即決', on: quickPlay },
-                        { k: 'gacha', icon: '🎰', label: '召喚', sub: '星屑で解放', on: () => setLobbyView('gacha') },
-                        { k: 'col', icon: '📚', label: 'コレクション', sub: '編成・お気に入り', on: () => setLobbyView('collection') },
-                        { k: 'equip', icon: '🛡', label: '観測装', sub: '装備パズル盤', on: () => setLobbyView('equip') },
-                        { k: 'regalia', icon: '💎', label: '宝物庫', sub: '部位装備・宝石・星', on: () => { setSlotSel(null); setSocketPick(null); setLobbyView('regalia'); } },
-                        { k: 'trial', icon: '⚔', label: '試練の道', sub: 'ダメージ目標', on: () => setLobbyView('trials') },
-                        { k: 'idle', icon: '💤', label: '放置観測', sub: '時間で収益', on: () => setLobbyView('idle') },
-                        { k: 'meta', icon: '🌌', label: '星屑強化', sub: '恒久upgrade', on: () => setShowMeta(true) },
-                      ] as const).map((b) => (
-                        <button key={b.k} type="button" onClick={b.on} className="flex flex-col items-start gap-0.5 rounded-lg border border-amber-600/30 bg-gradient-to-b from-neutral-800/60 to-neutral-950/70 p-3 text-left transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/70 hover:shadow-[0_0_18px_rgba(205,167,54,0.3)] active:scale-95">
-                          <span className="text-xl">{b.icon}</span>
-                          <span className="font-ritual text-[13px] tracking-wide text-amber-100">{b.label}</span>
-                          <span className="font-ritual text-[9px] text-stone-500">{b.sub}</span>
-                        </button>
-                      ))}
-                      {idleYield && (idleYield.gold > 0 || idleYield.dust > 0) && (
-                        <button type="button" onClick={() => setLobbyView('idle')} className="col-span-2 rounded-lg border border-emerald-400/50 bg-emerald-500/10 p-2 text-center font-ritual text-[11px] text-emerald-200 active:scale-95">💤 放置収益 🪙{idleYield.gold} ・ 🌌{idleYield.dust} を受け取る</button>
-                      )}
-                      <p className="col-span-2 mt-1 rounded-md border border-amber-700/20 bg-neutral-900/30 px-3 py-2 text-center font-ritual text-[10px] leading-relaxed text-stone-400">💡 {tip}</p>
-                    </div>
-                  )}
+                  {lobbyView === 'home' &&
+                    (() => {
+                      let nextStage = CHAPTERS[0].stages[0];
+                      for (const ch of CHAPTERS) {
+                        const found = ch.stages.find((st) => stageUnlocked(st.id, stageProgress) && !stageProgress.cleared.includes(st.id));
+                        if (found) { nextStage = found; break; }
+                      }
+                      return (
+                        <div className="flex flex-col gap-3">
+                          {/* ステージ・ヒーロー */}
+                          <div className="relative overflow-hidden rounded-xl border border-amber-600/30 bg-gradient-to-b from-amber-950/30 via-neutral-900/50 to-neutral-950/80 p-4 text-center">
+                            <div className="pointer-events-none absolute inset-0 opacity-40" style={{ background: 'radial-gradient(closest-side, rgba(205,167,54,0.18), transparent)' }} />
+                            <div className="relative">
+                              <p className="gs-eyebrow text-amber-300/70">Next Observation</p>
+                              <p className="mt-1 font-display text-lg tracking-wide text-stone-100">{nextStage.name}{nextStage.elite ? ' ・ エリート' : ''}</p>
+                              <p className="font-mono text-[10px] text-stone-400">{nextStage.waves} 波 ・ 推奨 {DIFFICULTIES[nextStage.difficulty].label}</p>
+                              <div className="my-3 text-5xl drop-shadow-[0_0_16px_rgba(205,167,54,0.5)]">{nextStage.elite ? '👑' : '🜨'}</div>
+                              <div className="mb-3 flex justify-center gap-1.5">
+                                {DIFFICULTY_LIST.map((d) => (
+                                  <button key={d.id} type="button" onClick={() => setHomeDiff(d.id)} className={`rounded-full border px-3 py-1 font-ritual text-[11px] transition-all active:scale-95 ${homeDiff === d.id ? 'border-amber-300/80 bg-amber-400/15 text-amber-100' : 'border-amber-700/30 bg-neutral-900/40 text-stone-400'}`}>{d.label}</button>
+                                ))}
+                              </div>
+                              <button type="button" onClick={() => startWithDiff(homeDiff)} className="w-full rounded-lg border border-amber-400/70 bg-gradient-to-b from-amber-500/25 to-amber-600/10 py-3 font-display text-base uppercase tracking-[0.18em] text-amber-100 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-amber-300/80 hover:shadow-[0_0_28px_rgba(205,167,54,0.45)] active:scale-95">
+                                <span className="gs-twinkle mr-1 text-amber-300">✦</span> 出撃 ・ ゲーム開始
+                              </button>
+                              <button type="button" onClick={() => setLobbyView('stages')} className="mt-2 font-ritual text-[10px] text-amber-300/70 underline-offset-2 hover:text-amber-200">観測階を選ぶ →</button>
+                            </div>
+                          </div>
+
+                          {/* 二次メニュー */}
+                          <div className="grid grid-cols-4 gap-2">
+                            {([
+                              { icon: '⚔', label: '試練', on: () => setLobbyView('trials') },
+                              { icon: '💤', label: '放置', on: () => setLobbyView('idle') },
+                              { icon: '🌌', label: '星屑', on: () => setShowMeta(true) },
+                              { icon: '🗺', label: '観測階', on: () => setLobbyView('stages') },
+                            ] as const).map((b) => (
+                              <button key={b.label} type="button" onClick={b.on} className="flex flex-col items-center gap-0.5 rounded-lg border border-amber-700/30 bg-neutral-900/40 p-2 transition-all active:scale-95 hover:border-amber-500/50">
+                                <span className="text-lg leading-none">{b.icon}</span>
+                                <span className="font-ritual text-[9px] text-stone-300">{b.label}</span>
+                              </button>
+                            ))}
+                          </div>
+
+                          {idleYield && (idleYield.gold > 0 || idleYield.dust > 0) && (
+                            <button type="button" onClick={() => setLobbyView('idle')} className="rounded-lg border border-emerald-400/50 bg-emerald-500/10 p-2 text-center font-ritual text-[11px] text-emerald-200 active:scale-95">💤 放置収益 🪙{idleYield.gold} ・ 🌌{idleYield.dust} を受け取る</button>
+                          )}
+                          <p className="rounded-md border border-amber-700/20 bg-neutral-900/30 px-3 py-2 text-center font-ritual text-[10px] leading-relaxed text-stone-400">💡 {tip}</p>
+                        </div>
+                      );
+                    })()}
 
                   {lobbyView === 'stages' && (
                     <div className="space-y-3">
@@ -2357,6 +2383,20 @@ export default function GamePage() {
                       );
                     })()}
                 </div>
+
+                {/* ボトムタブバー（本家風） */}
+                <div className="flex-shrink-0 border-t border-amber-700/25 bg-neutral-950/85 px-2 pb-2 pt-1.5">
+                  <div className="flex items-end justify-around">
+                    <LobbyTab active={lobbyView === 'gacha'} icon="🎰" label="召喚" onClick={() => setLobbyView('gacha')} />
+                    <LobbyTab active={lobbyView === 'regalia'} icon="💎" label="宝物庫" onClick={() => { setSlotSel(null); setSocketPick(null); setLobbyView('regalia'); }} />
+                    <button type="button" onClick={() => setLobbyView('home')} className={`-mt-4 flex h-14 w-14 flex-col items-center justify-center rounded-full border bg-gradient-to-b from-amber-400/30 to-amber-700/10 text-amber-100 shadow-[0_0_20px_rgba(205,167,54,0.45)] transition-transform active:scale-95 ${lobbyView === 'home' ? 'border-amber-300/80' : 'border-amber-500/50'}`}>
+                      <span className="gs-twinkle text-xl leading-none">▶</span>
+                      <span className="font-display text-[8px] tracking-wide">出撃</span>
+                    </button>
+                    <LobbyTab active={lobbyView === 'collection'} icon="📚" label="器具庫" onClick={() => setLobbyView('collection')} />
+                    <LobbyTab active={lobbyView === 'equip'} icon="🛡" label="観測装" onClick={() => setLobbyView('equip')} />
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -2471,6 +2511,15 @@ function Pill({ icon, value, accent = false }: { icon: string; value: string; ac
 
 function Tag({ children }: { children: React.ReactNode }) {
   return <span className="rounded-full border border-amber-500/40 bg-amber-400/10 px-2 py-0.5 font-ritual text-[10px] text-amber-200">{children}</span>;
+}
+
+function LobbyTab({ active, icon, label, onClick }: { active: boolean; icon: string; label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className={`flex flex-1 flex-col items-center gap-0.5 py-1 transition-colors active:scale-95 ${active ? 'text-amber-300' : 'text-stone-500'}`}>
+      <span className="text-lg leading-none">{icon}</span>
+      <span className="font-ritual text-[9px]">{label}</span>
+    </button>
+  );
 }
 
 function CodexSection({ title, entries }: { title: string; entries: CodexEntry[] }) {
