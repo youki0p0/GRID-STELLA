@@ -143,6 +143,7 @@ src/
       stars.ts          #   ★ star-upgrade scaling for gear
       saves.ts          #   versioned save export / import / reset
       help.ts           #   in-game help sections + rotating tips
+      particles.ts      #   pure particle bursts (hit / kill / ult / win)
 project/                # the source Claude Design system (tokens, component specs, prototype)
 docs/HANDOFF.md         # the original design-handoff brief
 ```
