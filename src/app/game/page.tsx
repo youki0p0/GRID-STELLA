@@ -80,6 +80,7 @@ import { GEM_COST, GEM_KINDS, GEMS, Gem, MAX_TIER, gemBonus, gemById, gemLabel, 
 import { MAX_STAR, canStarUp, starMul, starUpCost } from '@/lib/merge/stars';
 import { exportSave, importSave, resetSave } from '@/lib/merge/saves';
 import { HELP, randomTip } from '@/lib/merge/help';
+import { Particle, advance as advanceParticles, burst, fade } from '@/lib/merge/particles';
 
 const BEST_KEY = 'gs-best-wave';
 const RUNS_KEY = 'gs-runs';
@@ -364,6 +365,7 @@ export default function GamePage() {
   const [beams, setBeams] = useState<Beam[]>([]);
   const [popups, setPopups] = useState<Popup[]>([]);
   const [fx, setFx] = useState<Fx[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [cards, setCards] = useState<CardDef[]>([]);
   const [hurt, setHurt] = useState(false);
@@ -408,6 +410,7 @@ export default function GamePage() {
   const enemiesRef = useRef<Enemy[]>([]);
   const beamsRef = useRef<Beam[]>([]);
   const popupsRef = useRef<Popup[]>([]);
+  const particlesRef = useRef<Particle[]>([]);
   const cdRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => void (phaseRef.current = phase), [phase]);
@@ -840,6 +843,8 @@ export default function GamePage() {
     enemiesRef.current = list;
     beamsRef.current = [];
     popupsRef.current = [];
+    particlesRef.current = [];
+    setParticles([]);
     cdRef.current = new Map();
     freezeUntilRef.current = 0;
     comboRef.current = EMPTY_COMBO;
@@ -870,6 +875,7 @@ export default function GamePage() {
       const popArr = popupsRef.current;
       const frozen = now < freezeUntilRef.current;
       const mode = targetModeRef.current;
+      let pts = advanceParticles(particlesRef.current, dt);
 
       let hpNow = hpRef.current;
       let gNow = gaugeRef.current;
@@ -900,6 +906,7 @@ export default function GamePage() {
         if (pos >= PATH.length) {
           hpNow -= e.power;
           popArr.push({ id: nextId('p'), x: 50, y: 99, value: e.power, kind: 'hurt', born: now });
+          if (pts.length < 150) pts = pts.concat(burst('hit', 50, 96));
           setHurt(true);
           playSfx('hurt');
           vibrate('hurt');
@@ -960,6 +967,10 @@ export default function GamePage() {
         if (e.hp <= 0) {
           killAdd += 1;
           goldAdd += e.kind === 'boss' ? 12 : 1;
+          if (pts.length < 150) {
+            const ec = enemyCell(e.pos);
+            pts = pts.concat(burst(e.kind === 'boss' ? 'win' : 'kill', pctX(ec.c), pctY(ec.r)));
+          }
         } else survivors.push(e);
       }
 
@@ -980,6 +991,7 @@ export default function GamePage() {
       enemiesRef.current = survivors;
       beamsRef.current = liveBeams;
       popupsRef.current = livePops;
+      particlesRef.current = pts;
       hpRef.current = hpNow;
       gaugeRef.current = gNow;
       killsRef.current += killAdd;
@@ -988,6 +1000,7 @@ export default function GamePage() {
       setEnemies(survivors);
       setBeams(liveBeams.slice());
       setPopups(livePops.slice());
+      setParticles(pts);
       setHp(hpNow);
       setGauge(gNow);
       setCombo(cs.count);
@@ -1010,6 +1023,8 @@ export default function GamePage() {
         recordBest(cleared);
         playSfx('wave');
         if (cleared >= targetWavesRef.current && !endlessRef.current) {
+          particlesRef.current = particlesRef.current.concat(burst('win', 50, 42), burst('win', 32, 52), burst('win', 68, 52));
+          setParticles(particlesRef.current);
           playSfx('ultimate');
           finishRun(true);
           setPhase('victory');
@@ -1044,6 +1059,8 @@ export default function GamePage() {
       if (phaseRef.current !== 'combat' || !isReady(gaugeRef.current)) return;
       playSfx('ultimate');
       vibrate('ultimate');
+      particlesRef.current = particlesRef.current.concat(burst('ult', 50, 50));
+      setParticles(particlesRef.current);
       const now = performance.now();
       if (id === 'mend') {
         const nh = Math.min(maxHp, hpRef.current + MEND_HP);
@@ -1594,6 +1611,62 @@ export default function GamePage() {
   const ultReady = isReady(gauge);
   const targetDef = TARGET_MODES.find((m) => m.id === targetMode) ?? TARGET_MODES[0];
 
+  // 静的レイヤーはメモ化し、戦闘の毎フレーム再描画から切り離す。
+  const cellEls = useMemo(
+    () =>
+      Array.from({ length: GRID * GRID }, (_, i) => {
+        const r = Math.floor(i / GRID);
+        const c = i % GRID;
+        const k = keyOf(r, c);
+        const inRange = rangeCells.has(k);
+        const inHoverRange = hoverRangeCells?.has(k) ?? false;
+        const inPreview = placePreview?.cells.has(k) ?? false;
+        let hl = '';
+        if (inPreview) {
+          hl = placePreview!.ok
+            ? 'border-2 border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_16px_rgba(52,211,153,0.4),inset_0_0_12px_rgba(52,211,153,0.25)]'
+            : 'border-2 border-rose-500/80 bg-rose-500/10 shadow-[0_0_16px_rgba(244,63,94,0.4),inset_0_0_12px_rgba(244,63,94,0.25)]';
+        }
+        return (
+          <div key={k} className="absolute p-[1%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%' }}>
+            <div className={`relative h-full w-full rounded-md border transition-all duration-150 ease-out ${hl || (inHoverRange ? 'border-amber-400/40 bg-amber-400/[0.06]' : inRange ? 'border-amber-600/20 bg-amber-400/[0.025]' : 'border-amber-600/12 bg-white/[0.012]')}`}>
+              {inHoverRange && !inPreview && <div className="gs-aura pointer-events-none absolute inset-0 rounded-md bg-amber-400/15" />}
+            </div>
+          </div>
+        );
+      }),
+    [rangeCells, hoverRangeCells, placePreview],
+  );
+
+  const pieceEls = useMemo(
+    () =>
+      Object.values(board).map((p) => {
+        const box = pieceBox(p);
+        const dragging = drag?.source === 'board' && drag.uid === p.uid;
+        const def = TYPES[p.type];
+        const cells = pieceCells(p);
+        return (
+          <div
+            key={p.uid}
+            onPointerDown={(e) => onUnitPointerDown(e, 'board', { uid: p.uid, type: p.type, level: p.level }, undefined, p.uid)}
+            onPointerMove={onUnitPointerMove}
+            onPointerUp={onUnitPointerUp}
+            className={`absolute p-[1%] ${dragging ? 'opacity-30' : 'opacity-100'}`}
+            style={{ left: `${box.minC * 20}%`, top: `${box.minR * 20}%`, width: `${box.w * 20}%`, height: `${box.h * 20}%`, touchAction: 'none', zIndex: 10 }}
+          >
+            <div className="group relative h-full w-full cursor-grab transition-transform duration-150 active:scale-95">
+              {cells.map((cell) => (
+                <div key={`${cell.r},${cell.c}`} className={`absolute rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)]`} style={{ left: `${((cell.c - box.minC) / box.w) * 100}%`, top: `${((cell.r - box.minR) / box.h) * 100}%`, width: `${(1 / box.w) * 100}%`, height: `${(1 / box.h) * 100}%` }} />
+              ))}
+              <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]" style={{ fontSize: 'clamp(20px,7vw,40px)' }}>{def.emoji}</span>
+              <span className="pointer-events-none absolute right-0.5 top-0.5 rounded-sm bg-neutral-950/80 px-1 font-mono text-[8px] font-bold text-amber-300">L{p.level}</span>
+            </div>
+          </div>
+        );
+      }),
+    [board, drag, onUnitPointerDown, onUnitPointerMove, onUnitPointerUp],
+  );
+
   /* ========================================================================
    * 描画
    * ====================================================================== */
@@ -1673,57 +1746,19 @@ export default function GamePage() {
             )}
 
             {/* セル */}
-            {Array.from({ length: GRID * GRID }, (_, i) => {
-              const r = Math.floor(i / GRID);
-              const c = i % GRID;
-              const k = keyOf(r, c);
-              const inRange = rangeCells.has(k);
-              const inHoverRange = hoverRangeCells?.has(k) ?? false;
-              const inPreview = placePreview?.cells.has(k) ?? false;
-              let hl = '';
-              if (inPreview) {
-                hl = placePreview!.ok
-                  ? 'border-2 border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_16px_rgba(52,211,153,0.4),inset_0_0_12px_rgba(52,211,153,0.25)]'
-                  : 'border-2 border-rose-500/80 bg-rose-500/10 shadow-[0_0_16px_rgba(244,63,94,0.4),inset_0_0_12px_rgba(244,63,94,0.25)]';
-              }
-              return (
-                <div key={k} className="absolute p-[1%]" style={{ left: `${c * 20}%`, top: `${r * 20}%`, width: '20%', height: '20%' }}>
-                  <div className={`relative h-full w-full rounded-md border transition-all duration-150 ease-out ${hl || (inHoverRange ? 'border-amber-400/40 bg-amber-400/[0.06]' : inRange ? 'border-amber-600/20 bg-amber-400/[0.025]' : 'border-amber-600/12 bg-white/[0.012]')}`}>
-                    {inHoverRange && !inPreview && <div className="gs-aura pointer-events-none absolute inset-0 rounded-md bg-amber-400/15" />}
-                  </div>
-                </div>
-              );
-            })}
+            {cellEls}
 
             {/* 配置済み器具（多マスの形ピース） */}
-            {Object.values(board).map((p) => {
-              const box = pieceBox(p);
-              const dragging = drag?.source === 'board' && drag.uid === p.uid;
-              const def = TYPES[p.type];
-              const cells = pieceCells(p);
-              return (
-                <div
-                  key={p.uid}
-                  onPointerDown={(e) => onUnitPointerDown(e, 'board', { uid: p.uid, type: p.type, level: p.level }, undefined, p.uid)}
-                  onPointerMove={onUnitPointerMove}
-                  onPointerUp={onUnitPointerUp}
-                  className={`absolute p-[1%] ${dragging ? 'opacity-30' : 'opacity-100'}`}
-                  style={{ left: `${box.minC * 20}%`, top: `${box.minR * 20}%`, width: `${box.w * 20}%`, height: `${box.h * 20}%`, touchAction: 'none', zIndex: 10 }}
-                >
-                  <div className="group relative h-full w-full cursor-grab transition-transform duration-150 active:scale-95">
-                    {cells.map((cell) => (
-                      <div
-                        key={`${cell.r},${cell.c}`}
-                        className={`absolute rounded-md border bg-gradient-to-b ${RARITY_FRAME[def.rarity]} shadow-[inset_0_1px_0_rgba(218,185,79,0.12)]`}
-                        style={{ left: `${((cell.c - box.minC) / box.w) * 100}%`, top: `${((cell.r - box.minR) / box.h) * 100}%`, width: `${(1 / box.w) * 100}%`, height: `${(1 / box.h) * 100}%` }}
-                      />
-                    ))}
-                    <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 leading-none drop-shadow-[0_0_8px_rgba(205,167,54,0.5)]" style={{ fontSize: 'clamp(20px,7vw,40px)' }}>{def.emoji}</span>
-                    <span className="pointer-events-none absolute right-0.5 top-0.5 rounded-sm bg-neutral-950/80 px-1 font-mono text-[8px] font-bold text-amber-300">L{p.level}</span>
-                  </div>
-                </div>
-              );
-            })}
+            {pieceEls}
+
+            {/* パーティクル */}
+            {particles.length > 0 && (
+              <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl" style={{ zIndex: 20 }}>
+                {particles.map((p) => (
+                  <span key={p.id} className="absolute rounded-full" style={{ left: `${p.x}%`, top: `${p.y}%`, width: `${p.size}%`, height: `${p.size}%`, transform: 'translate(-50%,-50%)', background: `hsl(${p.hue} 90% 66%)`, opacity: fade(p) * 0.9, boxShadow: `0 0 4px hsl(${p.hue} 90% 60%)` }} />
+                ))}
+              </div>
+            )}
 
             {/* ビーム */}
             {beams.length > 0 && (
