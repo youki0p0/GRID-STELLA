@@ -12,8 +12,9 @@
  * ========================================================================== */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { GRID_H, GRID_W, JOBS, JOB_LIST, RARITY_META, footprint, itemById } from '@/lib/arena/data';
+import { GRID_H, GRID_W, JOBS, JOB_LIST, RARITY_META, footprint, itemById, levelStars } from '@/lib/arena/data';
 import { canPlace, firstFit } from '@/lib/arena/bag';
+import { canMerge, lvl, mergedTarget } from '@/lib/arena/merge';
 import { resolveBoard, simulate } from '@/lib/arena/battle';
 import { hashString } from '@/lib/arena/rng';
 import { MODES, REROLL_COST, battleTime, genOpponentBoard, newRun } from '@/lib/arena/run';
@@ -123,7 +124,7 @@ export default function ArenaPage() {
         setMsg('ゴールドが足りない。');
         return;
       }
-      const placed: PlacedItem = { id: uid('p'), key: slot.item.key, x: 0, y: 0, rot: 0 };
+      const placed: PlacedItem = { id: uid('p'), key: slot.item.key, x: 0, y: 0, rot: 0, level: 1 };
       const fit = firstFit(run.board, slot.item, 0);
       setRun((cur) => {
         if (!cur) return cur;
@@ -157,6 +158,25 @@ export default function ArenaPage() {
     setRun((cur) => (cur ? { ...cur, board: cur.board.filter((b) => b.id !== p.id) } : cur));
     setHeld({ p, from: 'board' });
   }, []);
+
+  // Tapping a board instrument: merge if holding a twin, otherwise pick it up.
+  const boardItemTap = useCallback(
+    (p: PlacedItem) => {
+      if (!held) {
+        pickBoard(p);
+        return;
+      }
+      if (canMerge(held.p, p)) {
+        const it = itemById(p.key)!;
+        setRun((cur) => (cur ? { ...cur, board: cur.board.map((b) => (b.id === p.id ? mergedTarget(b) : b)) } : cur));
+        setHeld(null);
+        setMsg(`${it.nameJa} を合成し ${'★'.repeat(lvl(p) + 1)} へ昇格。`);
+        return;
+      }
+      setMsg('合成は同じ器具・同じ★のみ。');
+    },
+    [held, pickBoard],
+  );
 
   const placeAt = useCallback(
     (x: number, y: number) => {
@@ -296,7 +316,7 @@ export default function ArenaPage() {
         )}
         {screen === 'play' && run && (
           <Play run={run} cfg={cfg} rank={rank} shop={shop} held={held} msg={msg} maxHp={playerMaxHp} power={playerPower}
-            onBuy={buy} onReroll={reroll} onPickBench={pickBench} onPickBoard={pickBoard} onPlace={placeAt}
+            onBuy={buy} onReroll={reroll} onPickBench={pickBench} onBoardTap={boardItemTap} onPlace={placeAt}
             onRotate={rotateHeld} onSell={sellHeld} onCancelHeld={cancelHeld} onBattle={beginBattle} busy={busy} />
         )}
         {screen === 'battle' && sim && opp && run && (
@@ -411,10 +431,10 @@ function ModeBanner({ mode }: { mode: Mode }) {
 /* ============================================================ PLAY */
 function Play(props: {
   run: RunState; cfg: (typeof MODES)['short']; rank: RankState; shop: ShopSlot[]; held: Held; msg: string; maxHp: number; power: number;
-  onBuy: (s: ShopSlot) => void; onReroll: () => void; onPickBench: (p: PlacedItem) => void; onPickBoard: (p: PlacedItem) => void;
+  onBuy: (s: ShopSlot) => void; onReroll: () => void; onPickBench: (p: PlacedItem) => void; onBoardTap: (p: PlacedItem) => void;
   onPlace: (x: number, y: number) => void; onRotate: () => void; onSell: () => void; onCancelHeld: () => void; onBattle: () => void; busy: boolean;
 }) {
-  const { run, cfg, rank, shop, held, msg, maxHp, power, onBuy, onReroll, onPickBench, onPickBoard, onPlace, onRotate, onSell, onCancelHeld, onBattle, busy } = props;
+  const { run, cfg, rank, shop, held, msg, maxHp, power, onBuy, onReroll, onPickBench, onBoardTap, onPlace, onRotate, onSell, onCancelHeld, onBattle, busy } = props;
   return (
     <div className="flex flex-col gap-3" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)' }}>
       <div className="grid grid-cols-4 gap-2">
@@ -448,7 +468,7 @@ function Play(props: {
       {held && (
         <div className="rounded-md p-2 flex items-center gap-2 flex-wrap" style={{ background: 'var(--surface-raised)', border: '1px solid var(--gold-line-70)', boxShadow: 'var(--glow-gold-sm)' }}>
           <ItemSprite id={itemById(held.p.key)!.sprite} size={30} />
-          <span className="text-gold-200" style={{ fontSize: '0.7rem' }}>{itemById(held.p.key)!.nameJa} — 盤をタップして配置</span>
+          <span className="text-gold-200" style={{ fontSize: '0.7rem' }}>{itemById(held.p.key)!.nameJa}{lvl(held.p) > 1 ? ` ${levelStars(lvl(held.p))}` : ''} — 空きに配置／同種に重ねて合成</span>
           <div className="ml-auto flex gap-1">
             <MiniBtn onClick={onRotate}>↻回転</MiniBtn>
             <MiniBtn onClick={onSell}>売却+{sellValue(itemById(held.p.key)!)}</MiniBtn>
@@ -457,15 +477,16 @@ function Play(props: {
         </div>
       )}
 
-      <Bag run={run} held={held} onPlace={onPlace} onPickBoard={onPickBoard} />
+      <Bag run={run} held={held} onPlace={onPlace} onBoardTap={onBoardTap} />
 
       {run.bench.length > 0 && (
         <div className="rounded-md p-2" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
           <p className="gs-eyebrow mb-1" style={{ fontSize: '0.55rem' }}>控え — BENCH</p>
           <div className="flex flex-wrap gap-1.5">
             {run.bench.map((b) => (
-              <button key={b.id} onClick={() => onPickBench(b)} className="rounded-sm p-1" style={{ background: 'var(--ink-900)', border: '1px solid var(--gold-line-20)' }}>
+              <button key={b.id} onClick={() => onPickBench(b)} className="rounded-sm p-1 relative" style={{ background: 'var(--ink-900)', border: '1px solid var(--gold-line-20)' }}>
                 <ItemSprite id={itemById(b.key)!.sprite} size={32} />
+                {lvl(b) > 1 && <span className="absolute -bottom-0.5 right-0.5 text-gold-300" style={{ fontSize: '0.5rem' }}>{levelStars(lvl(b))}</span>}
               </button>
             ))}
           </div>
@@ -510,7 +531,7 @@ function ShopCard({ slot, affordable, onBuy }: { slot: ShopSlot; affordable: boo
   );
 }
 
-function Bag({ run, held, onPlace, onPickBoard }: { run: RunState; held: Held; onPlace: (x: number, y: number) => void; onPickBoard: (p: PlacedItem) => void }) {
+function Bag({ run, held, onPlace, onBoardTap }: { run: RunState; held: Held; onPlace: (x: number, y: number) => void; onBoardTap: (p: PlacedItem) => void }) {
   const heldItem = held ? itemById(held.p.key)! : null;
   return (
     <div className="rounded-md p-2" style={{ background: 'var(--surface-panel)', border: '1px solid var(--gold-line-40)' }}>
@@ -530,11 +551,13 @@ function Bag({ run, held, onPlace, onPickBoard }: { run: RunState; held: Held; o
           const it = itemById(p.key)!;
           const { w, h } = footprint(it, p.rot);
           const tone = RARITY_META[it.rarity].tone;
+          const mergeable = held ? canMerge(held.p, p) : false;
           return (
-            <button key={p.id} onClick={() => onPickBoard(p)} className="absolute flex items-center justify-center" title={`${it.nameJa} — ${it.desc}`}
+            <button key={p.id} onClick={() => onBoardTap(p)} className="absolute flex items-center justify-center" title={`${it.nameJa}${lvl(p) > 1 ? ` ${levelStars(lvl(p))}` : ''} — ${it.desc}`}
               style={{ left: `${(p.x / GRID_W) * 100}%`, top: `${(p.y / GRID_H) * 100}%`, width: `${(w / GRID_W) * 100}%`, height: `${(h / GRID_H) * 100}%`, padding: 3 }}>
-              <span className="w-full h-full flex items-center justify-center rounded-sm" style={{ background: 'var(--ink-850)', border: `1px solid ${tone}88`, boxShadow: 'inset 0 0 8px rgba(0,0,0,0.6)' }}>
+              <span className="w-full h-full flex items-center justify-center rounded-sm relative" style={{ background: 'var(--ink-850)', border: `1px solid ${mergeable ? 'var(--signal-valid)' : `${tone}88`}`, boxShadow: mergeable ? '0 0 8px rgba(111,174,126,0.6)' : 'inset 0 0 8px rgba(0,0,0,0.6)' }}>
                 <ItemSprite id={it.sprite} size={Math.min(w, h) >= 2 ? 56 : 34} />
+                {lvl(p) > 1 && <span className="absolute bottom-0 right-0.5 text-gold-300" style={{ fontSize: '0.55rem', textShadow: '0 0 3px #000' }}>{levelStars(lvl(p))}</span>}
               </span>
             </button>
           );

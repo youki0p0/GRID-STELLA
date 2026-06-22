@@ -308,6 +308,117 @@ export const ITEMS: Item[] = [
     action: { cd: 0.8, atk: 2, goldScale: 3 },
     auras: [{ scope: 'all', tag: 'coin', atkMul: 1.25 }],
   },
+
+  /* ---------- COMMON (wave 2 — broadens build options) ---------- */
+  {
+    key: 'dagger', nameJa: '行商の小刀', nameEn: 'Peddler Dagger', sprite: 'knife',
+    rarity: 'common', job: null, cost: 2, w: 1, h: 1, tags: ['blade'],
+    desc: '0.8秒ごとに素早い斬撃。安価な手数。',
+    action: { cd: 0.8, atk: 7 },
+  },
+  {
+    key: 'buckler', nameJa: '小円盾', nameEn: 'Buckler', sprite: 'shield',
+    rarity: 'common', job: null, cost: 2, w: 1, h: 1, tags: ['guard'],
+    desc: '最大HP +10。1.5秒ごとにシールド +6。',
+    maxHp: 10,
+    action: { cd: 1.5, shield: 6 },
+  },
+  {
+    key: 'whetstone', nameJa: '研ぎ石', nameEn: 'Whetstone', sprite: 'gem',
+    rarity: 'common', job: null, cost: 3, w: 1, h: 1, tags: ['relic'],
+    desc: '隣接する刃・重武器の発動を8%加速。',
+    auras: [{ scope: 'adj', tag: 'blade', cdMul: 0.92 }, { scope: 'adj', tag: 'heavy', cdMul: 0.92 }],
+  },
+  {
+    key: 'caltrops', nameJa: '撒菱', nameEn: 'Caltrops', sprite: 'fang',
+    rarity: 'common', job: null, cost: 2, w: 1, h: 1, tags: ['toxin'],
+    desc: '1.6秒ごとに毒を1スタック付与。安価な毒の種。',
+    action: { cd: 1.6, poison: 1 },
+  },
+  {
+    key: 'lantern', nameJa: '導きの提灯', nameEn: 'Guiding Lantern', sprite: 'ember',
+    rarity: 'rare', job: null, cost: 4, w: 1, h: 1, tags: ['relic'],
+    desc: '同じ行の全器具の攻撃 +8%。最大HP +8。',
+    maxHp: 8,
+    auras: [{ scope: 'row', atkMul: 1.08 }],
+  },
+  {
+    key: 'elixir', nameJa: '星霜の霊薬', nameEn: 'Astral Elixir', sprite: 'potion',
+    rarity: 'rare', job: null, cost: 5, w: 1, h: 1, tags: ['mend'],
+    desc: '1.2秒ごとにHP回復。最大HP +16。',
+    maxHp: 16,
+    action: { cd: 1.2, heal: 9 },
+  },
+  {
+    key: 'banner', nameJa: '観測団の旗', nameEn: 'Bureau Banner', sprite: 'sigil',
+    rarity: 'epic', job: null, cost: 8, w: 1, h: 2, tags: ['relic'],
+    desc: '盤上の全器具の攻撃 +12%。最大HP +20。',
+    maxHp: 20,
+    auras: [{ scope: 'all', atkMul: 1.12 }],
+  },
+  {
+    key: 'mirror', nameJa: '反射の円鏡', nameEn: 'Aegis Mirror', sprite: 'lens',
+    rarity: 'rare', job: null, cost: 5, w: 1, h: 1, tags: ['guard'],
+    desc: '1.0秒ごとにシールド +9 と小反撃。',
+    action: { cd: 1.0, shield: 9, atk: 6 },
+  },
+
+  /* ---------- SENTINEL (wave 2) ---------- */
+  {
+    key: 'sen_spear', nameJa: '貫きの長槍', nameEn: 'Piercing Spear', sprite: 'gsword',
+    rarity: 'rare', job: 'sentinel', cost: 5, w: 1, h: 2, tags: ['blade', 'heavy'],
+    desc: '1.1秒ごとに攻撃。シールドを6貫通。',
+    action: { cd: 1.1, atk: 15, pierce: 6 },
+  },
+  {
+    key: 'sen_bulwark', nameJa: '城塞の壁', nameEn: 'Bulwark', sprite: 'tower',
+    rarity: 'epic', job: 'sentinel', cost: 7, w: 2, h: 1, tags: ['guard'],
+    desc: '最大HP +40。同じ行の盾の防御を強化（攻撃 +18%）。',
+    maxHp: 40,
+    auras: [{ scope: 'row', tag: 'guard', atkMul: 1.18 }],
+  },
+
+  /* ---------- CATALYST (wave 2) ---------- */
+  {
+    key: 'cat_miasma', nameJa: '瘴気の渦', nameEn: 'Miasma Coil', sprite: 'censer',
+    rarity: 'epic', job: 'catalyst', cost: 7, w: 1, h: 2, tags: ['hex', 'toxin'],
+    desc: '1.0秒ごとに鈍足と毒2を付与。',
+    action: { cd: 1.0, slow: 0.1, poison: 2 },
+  },
+  {
+    key: 'cat_emberjar', nameJa: '燼の壺', nameEn: 'Ember Jar', sprite: 'flask',
+    rarity: 'rare', job: 'catalyst', cost: 5, w: 1, h: 1, tags: ['cinder'],
+    desc: '1.4秒ごとに直撃 +火傷。隣接する燼の火傷 +30%。',
+    action: { cd: 1.4, atk: 10, burn: 7 },
+    auras: [{ scope: 'adj', tag: 'cinder', burnMul: 1.3 }],
+  },
+  {
+    key: 'cat_venomblade', nameJa: '毒刃', nameEn: 'Venom Edge', sprite: 'twin',
+    rarity: 'rare', job: 'catalyst', cost: 5, w: 1, h: 2, tags: ['blade', 'toxin'],
+    desc: '0.8秒ごとに斬撃し毒1を付与。刃と毒の橋渡し。',
+    action: { cd: 0.8, atk: 8, poison: 1 },
+  },
+
+  /* ---------- BROKER (wave 2) ---------- */
+  {
+    key: 'bro_chest', nameJa: '小型の宝箱', nameEn: 'Small Coffer', sprite: 'ledger',
+    rarity: 'rare', job: 'broker', cost: 4, w: 1, h: 1, tags: ['coin'],
+    desc: '最大HP +14。所持ゴールド8ごとに攻撃1（1.0秒）。',
+    maxHp: 14,
+    action: { cd: 1.0, atk: 1, goldScale: 8 },
+  },
+  {
+    key: 'bro_appraise', nameJa: '鑑定の眼鏡', nameEn: 'Appraiser Lens', sprite: 'lens',
+    rarity: 'epic', job: 'broker', cost: 7, w: 1, h: 1, tags: ['relic', 'coin'],
+    desc: '隣接する貨アイテムの攻撃 +22%、発動 +10%。',
+    auras: [{ scope: 'adj', tag: 'coin', atkMul: 1.22, cdMul: 0.9 }],
+  },
+  {
+    key: 'bro_volley', nameJa: '投擲の山積み', nameEn: 'Knife Volley', sprite: 'knife',
+    rarity: 'rare', job: 'broker', cost: 4, w: 1, h: 2, tags: ['relic'],
+    desc: '0.6秒ごとに連続投擲。手数特化の使い捨て火力。',
+    action: { cd: 0.6, atk: 7 },
+  },
 ];
 
 export const ITEM_MAP: Record<string, Item> = Object.fromEntries(ITEMS.map((it) => [it.key, it]));
@@ -319,4 +430,18 @@ export function itemById(key: string): Item | undefined {
 /** Footprint of an item accounting for rotation. */
 export function footprint(it: Item, rot: 0 | 1): { w: number; h: number } {
   return rot === 0 ? { w: it.w, h: it.h } : { w: it.h, h: it.w };
+}
+
+/** Merge tiers: identical same-level items combine into a stronger one. */
+export const MAX_LEVEL = 3;
+const STAT_MUL = [1, 1.7, 2.8]; // index = level-1
+
+/** Stat multiplier for a merged instrument's level (atk / hp / effects). */
+export function statMul(level: number): number {
+  return STAT_MUL[Math.max(1, Math.min(MAX_LEVEL, level)) - 1];
+}
+
+/** Star string for UI (★ per level). */
+export function levelStars(level: number): string {
+  return '★'.repeat(Math.max(1, Math.min(MAX_LEVEL, level)));
 }

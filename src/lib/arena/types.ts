@@ -88,6 +88,7 @@ export interface PlacedItem {
   x: number;
   y: number;
   rot: 0 | 1; // 0 = unrotated, 1 = 90° (swaps w/h)
+  level?: number; // merge tier (1..MAX_LEVEL); undefined = 1
 }
 
 export interface Job {

@@ -1,7 +1,7 @@
 // GRID STELLA — ARENA :: deterministic auto-battle.
 // Both sides are resolved into mirror "Combatants" and simulated on one timeline.
 import { adjacent, sharesCol, sharesRow } from './bag';
-import { itemById } from './data';
+import { itemById, statMul } from './data';
 import { makeRng } from './rng';
 import type { BattleFrame, BattleResult, BattleSim, Combatant, ItemAction, Module, PlacedItem } from './types';
 
@@ -24,8 +24,8 @@ export function resolveBoard(name: string, board: PlacedItem[], gold: number, hp
   const res = new Map<string, ResMod>();
   for (const p of acting) res.set(p.id, { atkMul: 1, cdMul: 1, critAdd: 0, poisonAdd: 0, burnMul: 1 });
 
-  // accumulate flat max-hp
-  for (const p of board) maxHp += itemById(p.key)?.maxHp ?? 0;
+  // accumulate flat max-hp (scaled by merge level)
+  for (const p of board) maxHp += (itemById(p.key)?.maxHp ?? 0) * statMul(p.level ?? 1);
 
   // apply auras
   for (const emitter of board) {
@@ -58,19 +58,20 @@ export function resolveBoard(name: string, board: PlacedItem[], gold: number, hp
     const it = itemById(p.key)!;
     const a = it.action!;
     const r = res.get(p.id)!;
+    const sm = statMul(p.level ?? 1);
     const goldPart = a.goldScale ? Math.floor(gold / a.goldScale) : 0;
-    const atk = Math.round(((a.atk ?? 0) + goldPart) * r.atkMul);
+    const atk = Math.round(((a.atk ?? 0) * sm + goldPart) * r.atkMul);
     const cd = Math.max(0.2, a.cd * r.cdMul);
     const action: ItemAction = {
       cd,
       atk,
       crit: (a.crit ?? 0) + r.critAdd,
-      poison: a.poison ? a.poison + r.poisonAdd : undefined,
-      burn: a.burn ? Math.round(a.burn * r.burnMul) : undefined,
+      poison: a.poison ? Math.round(a.poison * sm) + r.poisonAdd : undefined,
+      burn: a.burn ? Math.round(a.burn * sm * r.burnMul) : undefined,
       slow: a.slow,
       vuln: a.vuln,
-      shield: a.shield,
-      heal: a.heal,
+      shield: a.shield ? Math.round(a.shield * sm) : undefined,
+      heal: a.heal ? Math.round(a.heal * sm) : undefined,
       pierce: a.pierce,
     };
     return { key: p.key, nameJa: it.nameJa, sprite: it.sprite, action, atk, cd, crit: action.crit ?? 0 };

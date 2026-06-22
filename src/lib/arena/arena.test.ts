@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { JOBS, ITEMS, itemById } from './data';
+import { JOBS, ITEMS, MAX_LEVEL, itemById, statMul } from './data';
+import { canMerge, lvl, mergedTarget } from './merge';
 import { canPlace, cellsOf, firstFit } from './bag';
 import { resolveBoard, simulate } from './battle';
 import { allowedRarities, genOpponentBoard, MODES, newRun } from './run';
@@ -19,7 +20,36 @@ describe('data integrity', () => {
       expect(it.h).toBeGreaterThanOrEqual(1);
       expect(it.cost).toBeGreaterThan(0);
     }
-    expect(ITEMS.length).toBeGreaterThanOrEqual(30);
+    expect(ITEMS.length).toBeGreaterThanOrEqual(50);
+  });
+});
+
+describe('merge / level system', () => {
+  it('merges identical same-level instruments and caps at MAX_LEVEL', () => {
+    const a = place('saber', 0, 0);
+    const b = place('saber', 1, 0);
+    expect(canMerge(a, b)).toBe(true);
+    const up = mergedTarget(b);
+    expect(lvl(up)).toBe(2);
+    expect(canMerge(a, up)).toBe(false); // different level
+    const maxed = { ...b, level: MAX_LEVEL };
+    expect(canMerge(maxed, { ...a, level: MAX_LEVEL })).toBe(false); // capped
+  });
+  it('refuses to merge different instruments', () => {
+    expect(canMerge(place('saber', 0, 0), place('needle', 1, 0))).toBe(false);
+  });
+  it('statMul rises with level and scales resolved atk', () => {
+    expect(statMul(2)).toBeGreaterThan(statMul(1));
+    expect(statMul(3)).toBeGreaterThan(statMul(2));
+    const lo = resolveBoard('p', [{ ...place('saber', 0, 0), level: 1 }], 0, 100).modules[0].atk;
+    const hi = resolveBoard('p', [{ ...place('saber', 0, 0), level: 3 }], 0, 100).modules[0].atk;
+    expect(hi).toBeGreaterThan(lo);
+  });
+  it('a fully-merged board beats its unmerged twin', () => {
+    const board = [place('saber', 0, 0), place('twinblade', 2, 0), place('aegis', 4, 0)];
+    const merged = resolveBoard('A', board.map((p) => ({ ...p, level: 3 })), 10, JOBS.sentinel.startingHp);
+    const plain = resolveBoard('B', board.map((p) => ({ ...p, level: 1 })), 10, JOBS.sentinel.startingHp);
+    expect(simulate(merged, plain, 7, 30).result).toBe('win');
   });
 });
 
