@@ -8,11 +8,11 @@ export const metadata: Metadata = {
 };
 
 const FEATURES = [
-  'マージ × ループディフェンス × ローグライク',
-  '多マスのパズル盤で展開する空間戦略',
-  '必殺スキル・遺物・編成シナジー',
-  '装備・宝石・星強化によるビルド深度',
-  '放置収益・試練・ステージ攻略',
+  'バッグ構築型オートバトラー（3系統 × 各3戦術）',
+  '観測盤に器具を配置し、隣接シナジーを繋ぐ',
+  'ショート / ロング：遊び味もランクも完全分離',
+  'Supabase による非同期ゴースト対戦マッチング',
+  'GPT生成→ドット絵化した完全オリジナル素材',
   '座標の歪みを補正し、世界を護る',
 ];
 
@@ -97,8 +97,16 @@ export default function LandingPage() {
         className="text-stone-500 mb-12"
         style={{ fontSize: '0.75rem', letterSpacing: '0.08em' }}
       >
-        スマホ縦持ち推奨 ・ ドラッグ&amp;ドロップ操作
+        スマホ縦持ち推奨 ・ タップ配置操作
       </p>
+
+      <Link
+        href="/classic"
+        className="text-stone-500 hover:text-gold-300 mb-12 transition-colors underline decoration-dotted"
+        style={{ fontSize: '0.7rem', letterSpacing: '0.08em' }}
+      >
+        旧版（ループディフェンス）を遊ぶ →
+      </Link>
 
       {/* ── Gold rule footer ── */}
       <div className="gs-rule w-48 mx-auto mb-6" />

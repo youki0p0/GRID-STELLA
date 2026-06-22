@@ -30,3 +30,6 @@ next-env.d.ts
 # editor
 .vscode/
 .idea/
+
+# arena: full-res GPT source images (small pixelated public/arena/*.png are committed)
+/raw_assets
