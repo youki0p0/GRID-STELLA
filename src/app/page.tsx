@@ -8,12 +8,12 @@ export const metadata: Metadata = {
 };
 
 const FEATURES = [
-  'バッグ構築型オートバトラー（3系統 × 各3戦術）',
-  '観測盤に器具を配置し、隣接シナジーを繋ぐ',
-  'ショート / ロング：遊び味もランクも完全分離',
-  'Supabase による非同期ゴースト対戦マッチング',
+  '回路構築型オートバトラー「神楽マキナ」',
+  'コアから電力を引き、武器と装置を回路に組む',
+  'エネルギー経済 — 強装置ほど消費が重い',
+  '3系統＝状態異常の 起爆 / 蓄積 / 参照',
+  '共通の状態異常6種で初心者にも明快',
   'GPT生成→ドット絵化した完全オリジナル素材',
-  '座標の歪みを補正し、世界を護る',
 ];
 
 export default function LandingPage() {
@@ -75,7 +75,7 @@ export default function LandingPage() {
         "
         style={{ fontSize: 'clamp(0.85rem, 2.5vw, 1rem)' }}
       >
-        観測を始める ▶
+回路を起動 ▶
       </Link>
 
       {/* ── Feature list ── */}
@@ -100,13 +100,22 @@ export default function LandingPage() {
         スマホ縦持ち推奨 ・ タップ配置操作
       </p>
 
-      <Link
-        href="/classic"
-        className="text-stone-500 hover:text-gold-300 mb-12 transition-colors underline decoration-dotted"
-        style={{ fontSize: '0.7rem', letterSpacing: '0.08em' }}
-      >
-        旧版（ループディフェンス）を遊ぶ →
-      </Link>
+      <div className="flex flex-col items-center gap-2 mb-12">
+        <Link
+          href="/arena"
+          className="text-stone-500 hover:text-gold-300 transition-colors underline decoration-dotted"
+          style={{ fontSize: '0.7rem', letterSpacing: '0.08em' }}
+        >
+          ARENA（バッグ構築・非同期PvP）を遊ぶ →
+        </Link>
+        <Link
+          href="/classic"
+          className="text-stone-500 hover:text-gold-300 transition-colors underline decoration-dotted"
+          style={{ fontSize: '0.7rem', letterSpacing: '0.08em' }}
+        >
+          旧版（ループディフェンス）を遊ぶ →
+        </Link>
+      </div>
 
       {/* ── Gold rule footer ── */}
       <div className="gs-rule w-48 mx-auto mb-6" />
