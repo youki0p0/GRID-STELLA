@@ -42,8 +42,10 @@ import {
 } from '@/lib/machina/run';
 import { applyMerges, mergeCandidateIds } from '@/lib/machina/merge';
 import { uniqueChoices } from '@/lib/machina/unique';
+import { DEFAULT_RANK, applyCrown, applyResult, loadRank, myRating, pveRating, rankLabel, saveRank, tierOf } from '@/lib/machina/rank';
+import { STATUS_META } from '@/lib/machina/status';
 import { hashString } from '@/lib/arena/rng';
-import type { BattleSim, Item, JobId, Mode, PlacedItem, PlacedTile, TileKind } from '@/lib/machina/types';
+import type { BattleSim, Item, JobId, Mode, PlacedItem, PlacedTile, RankState, StatusKey, StatusState, TileKind } from '@/lib/machina/types';
 import { ItemSprite } from '@/components/arena/ItemSprite';
 import { CircuitBoard, type TileTrayEntry } from '@/components/machina/CircuitBoard';
 import { ItemDetail } from '@/components/machina/ItemDetail';
@@ -100,10 +102,16 @@ export default function GamePage() {
   const [uniquePick, setUniquePick] = useState<Item[] | null>(null);
 
   const [sim, setSim] = useState<BattleSim | null>(null);
-  const [opp, setOpp] = useState<{ name: string; job: JobId } | null>(null);
+  const [opp, setOpp] = useState<{ name: string; job: JobId; rating: number } | null>(null);
   const [frameIdx, setFrameIdx] = useState(0);
 
-  useEffect(() => setBest(loadBest()), []);
+  const [rank, setRank] = useState<RankState>(DEFAULT_RANK);
+  const [delta, setDelta] = useState(0);
+
+  useEffect(() => {
+    setBest(loadBest());
+    setRank(loadRank());
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -287,7 +295,7 @@ export default function GamePage() {
     const enemy = resolveBoard(og.name, oppJob, og.board, og.tiles, { allPowered: true });
     const result = simulate(player, enemy, seed, battleTime(run.mode));
     setSim(result);
-    setOpp({ name: og.name, job: oppJob });
+    setOpp({ name: og.name, job: oppJob, rating: pveRating(run.round) });
     setFrameIdx(0);
     setScreen('battle');
   }, [run, hasPoweredWeapon]);
@@ -300,7 +308,15 @@ export default function GamePage() {
     return () => window.clearTimeout(t);
   }, [screen, sim, frameIdx]);
 
-  const finishBattle = useCallback(() => setScreen('result'), []);
+  const finishBattle = useCallback(() => {
+    if (run && sim && opp) {
+      const { rank: nr, delta: d } = applyResult(rank, run.mode, opp.rating, sim.result);
+      setRank(nr);
+      saveRank(nr);
+      setDelta(d);
+    }
+    setScreen('result');
+  }, [run, sim, opp, rank]);
 
   // shared "advance into next shop phase" — also runs applyMerges + restocks
   const goToNextShop = useCallback(
@@ -352,6 +368,9 @@ export default function GamePage() {
     if (wins >= cfg.winsToCrown) {
       const nb = Math.max(best, wins);
       if (nb > best) { setBest(nb); saveBest(nb); }
+      const cr = applyCrown(rank, run.mode);
+      setRank(cr);
+      saveRank(cr);
       setRun((cur) => (cur ? { ...cur, wins } : cur));
       setScreen('crown');
       return;
@@ -364,7 +383,7 @@ export default function GamePage() {
       return;
     }
     goToNextShop(run, wins, lives, won);
-  }, [run, sim, cfg, best, goToNextShop]);
+  }, [run, sim, cfg, best, rank, goToNextShop]);
 
   // pick a unique (after R5 win) then continue to next shop
   const chooseUnique = useCallback(
@@ -393,7 +412,7 @@ export default function GamePage() {
   return (
     <main className="gs-starfield min-h-screen w-full" style={{ fontFamily: 'var(--font-ui)', color: 'var(--text-primary)' }}>
       <div className="mx-auto w-full max-w-md px-3 py-4" style={{ minHeight: '100vh' }}>
-        {screen === 'home' && <Home best={best} mode={mode} job={job} onMode={setMode} onJob={setJob} onStart={startRun} />}
+        {screen === 'home' && <Home best={best} rank={rank} mode={mode} job={job} onMode={setMode} onJob={setJob} onStart={startRun} />}
         {screen === 'play' && run && combatant && (
           <Play
             run={run}
@@ -422,7 +441,7 @@ export default function GamePage() {
         {screen === 'battle' && sim && opp && run && (
           <Battle sim={sim} frameIdx={frameIdx} opp={opp} run={run} onSkip={() => setFrameIdx(sim.frames.length - 1)} onDone={finishBattle} />
         )}
-        {screen === 'result' && sim && run && opp && <Result sim={sim} run={run} opp={opp} onNext={advance} />}
+        {screen === 'result' && sim && run && opp && <Result sim={sim} run={run} opp={opp} rank={rank} delta={delta} onNext={advance} />}
         {screen === 'crown' && run && <EndScreen kind="crown" run={run} onHome={exitHome} />}
         {screen === 'defeat' && run && <EndScreen kind="defeat" run={run} onHome={exitHome} />}
       </div>
@@ -441,10 +460,10 @@ export default function GamePage() {
 
 /* ============================================================ HOME */
 function Home(props: {
-  best: number; mode: Mode; job: JobId;
+  best: number; rank: RankState; mode: Mode; job: JobId;
   onMode: (m: Mode) => void; onJob: (j: JobId) => void; onStart: () => void;
 }) {
-  const { best, mode, job, onMode, onJob, onStart } = props;
+  const { best, rank, mode, job, onMode, onJob, onStart } = props;
   const c = MODES[mode];
   return (
     <div className="flex flex-col gap-4" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)' }}>
@@ -459,6 +478,12 @@ function Home(props: {
         <p className="font-ritual text-gold-300 opacity-90" style={{ fontSize: '0.82rem', letterSpacing: '0.18em' }}>機械神の回路</p>
         <div className="gs-rule w-48 mx-auto mt-3" />
       </header>
+
+      {/* ranked ladders (separate short / long) */}
+      <div className="grid grid-cols-2 gap-3">
+        <RankCard label="SHORT RANK" rating={rank.shortRating} crowns={rank.shortCrowns} />
+        <RankCard label="LONG RANK" rating={rank.longRating} crowns={rank.longCrowns} />
+      </div>
 
       {/* mode toggle */}
       <div className="grid grid-cols-2 gap-3">
@@ -512,6 +537,17 @@ function Home(props: {
         起動 — {mode === 'short' ? 'SHORT' : 'LONG'} ▶
       </button>
       {best > 0 && <p className="text-center text-stone-500" style={{ fontSize: '0.66rem' }}>自己最高 {best}勝</p>}
+    </div>
+  );
+}
+
+function RankCard({ label, rating, crowns }: { label: string; rating: number; crowns: number }) {
+  const t = tierOf(rating);
+  return (
+    <div className="rounded-md p-3 text-center" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
+      <p className="gs-eyebrow opacity-70" style={{ fontSize: '0.55rem' }}>{label}</p>
+      <p className="font-display text-gold-200 mt-1" style={{ fontSize: '1.0rem' }}>{rankLabel(rating)}</p>
+      <p className="text-stone-400 mt-0.5" style={{ fontSize: '0.6rem' }}>{t.ja} · {rating}pt{crowns > 0 ? ` · 👑${crowns}` : ''}</p>
     </div>
   );
 }
@@ -672,9 +708,9 @@ function Battle({ sim, frameIdx, opp, run, onSkip, onDone }: {
   return (
     <div className="flex flex-col gap-3" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)' }}>
       <p className="text-center gs-eyebrow">第 {run.round} 回路 — {run.mode === 'short' ? 'SHORT' : 'LONG'}</p>
-      <SideBar name="自軍" sub={JOBS[run.job].nameJa} hp={f.pHp} shield={f.pShield} energy={f.pEnergy} maxEnergy={pMaxE} max={sim.pMaxHp} mine hit={pHit} fx="fx_burst" />
+      <SideBar name="自軍" sub={JOBS[run.job].nameJa} hp={f.pHp} shield={f.pShield} energy={f.pEnergy} maxEnergy={pMaxE} max={sim.pMaxHp} status={f.pStatus} mine hit={pHit} fx="fx_burst" />
       <div className="text-center text-stone-500" style={{ fontSize: '0.7rem' }}>{f.t.toFixed(1)}秒</div>
-      <SideBar name={opp.name} sub={JOBS[opp.job].nameJa} hp={f.eHp} shield={f.eShield} energy={f.eEnergy} maxEnergy={eMaxE} max={sim.eMaxHp} hit={eHit} fx="fx_slash" />
+      <SideBar name={opp.name} sub={JOBS[opp.job].nameJa} hp={f.eHp} shield={f.eShield} energy={f.eEnergy} maxEnergy={eMaxE} max={sim.eMaxHp} status={f.eStatus} hit={eHit} fx="fx_slash" />
 
       <div ref={logRef} className="rounded-md p-2 overflow-y-auto" style={{ background: 'var(--ink-900)', border: '1px solid var(--gold-line-20)', height: 150, fontSize: '0.66rem', fontFamily: 'var(--font-mono)' }}>
         {logsToShow.map((l, i) => (<div key={i} className="text-stone-300 leading-relaxed">› {l}</div>))}
@@ -689,11 +725,14 @@ function Battle({ sim, frameIdx, opp, run, onSkip, onDone }: {
   );
 }
 
-function SideBar({ name, sub, hp, shield, energy, maxEnergy, max, mine, hit, fx }: {
-  name: string; sub: string; hp: number; shield: number; energy: number; maxEnergy: number; max: number; mine?: boolean; hit?: number | null; fx?: string;
+const STATUS_ORDER: StatusKey[] = ['overvolt', 'virus', 'jam', 'freeze', 'memleak', 'crash'];
+
+function SideBar({ name, sub, hp, shield, energy, maxEnergy, max, status, mine, hit, fx }: {
+  name: string; sub: string; hp: number; shield: number; energy: number; maxEnergy: number; max: number; status?: StatusState; mine?: boolean; hit?: number | null; fx?: string;
 }) {
   const pct = Math.max(0, Math.min(100, (hp / max) * 100));
   const ePct = Math.max(0, Math.min(100, (energy / Math.max(1, maxEnergy)) * 100));
+  const chips = status ? STATUS_ORDER.filter((k) => (status[k] ?? 0) > 0) : [];
   return (
     <div className="relative rounded-md p-2.5" style={{ background: 'var(--surface-card)', border: `1px solid ${mine ? 'var(--gold-line-40)' : 'rgba(192,82,74,0.45)'}` }}>
       {hit != null && fx && (
@@ -714,13 +753,25 @@ function SideBar({ name, sub, hp, shield, energy, maxEnergy, max, mine, hit, fx 
         <div className="absolute inset-y-0 left-0 transition-all" style={{ width: `${ePct}%`, background: 'linear-gradient(90deg,#3f6fa0,#9fd0e6)' }} />
         <span className="absolute inset-0 flex items-center justify-end pr-1 font-mono" style={{ fontSize: '0.5rem', color: 'var(--white-pure)' }}>⚡{energy.toFixed(0)}</span>
       </div>
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {chips.map((k) => {
+            const m = STATUS_META[k];
+            return (
+              <span key={k} className="rounded-sm px-1 leading-tight font-mono" style={{ fontSize: '0.5rem', color: m.tone, border: `1px solid ${m.tone}66`, background: `${m.tone}1a` }} title={m.desc}>
+                {m.ja}{(status![k] ?? 0) > 1 ? Math.round(status![k]) : ''}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 /* ============================================================ RESULT */
-function Result({ sim, run, opp, onNext }: {
-  sim: BattleSim; run: RunState; opp: { name: string; job: JobId }; onNext: () => void;
+function Result({ sim, run, opp, rank, delta, onNext }: {
+  sim: BattleSim; run: RunState; opp: { name: string; job: JobId; rating: number }; rank: RankState; delta: number; onNext: () => void;
 }) {
   const win = sim.result === 'win';
   const draw = sim.result === 'draw';
@@ -732,10 +783,17 @@ function Result({ sim, run, opp, onNext }: {
       <h2 className="font-display tracking-widest" style={{ fontSize: '2.2rem', color }}>{win ? '勝 利' : draw ? '引き分け' : '敗 北'}</h2>
       <div className="gs-rule w-40" />
       <p className="text-stone-300" style={{ fontSize: '0.8rem' }}>対 {JOBS[opp.job].nameJa}「{opp.name}」 — 自 {Math.round((sim.pHp / sim.pMaxHp) * 100)}% / 敵 {Math.round((sim.eHp / sim.eMaxHp) * 100)}%</p>
-      <div className="rounded-md px-6 py-3" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-40)' }}>
-        <p className="text-stone-500" style={{ fontSize: '0.6rem' }}>勝利数</p>
-        <p className="font-display" style={{ fontSize: '1.4rem', color: 'var(--gold-300)' }}>{win ? run.wins + 1 : run.wins} / {cfg.winsToCrown}</p>
-        <p className="text-stone-400 mt-0.5" style={{ fontSize: '0.7rem' }}>♥ {!win ? run.lives - 1 : run.lives} 残</p>
+      <div className="grid grid-cols-2 gap-3 w-full">
+        <div className="rounded-md px-4 py-3" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-40)' }}>
+          <p className="text-stone-500" style={{ fontSize: '0.6rem' }}>勝利数</p>
+          <p className="font-display" style={{ fontSize: '1.3rem', color: 'var(--gold-300)' }}>{win ? run.wins + 1 : run.wins} / {cfg.winsToCrown}</p>
+          <p className="text-stone-400 mt-0.5" style={{ fontSize: '0.66rem' }}>♥ {!win ? run.lives - 1 : run.lives} 残</p>
+        </div>
+        <div className="rounded-md px-4 py-3" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-40)' }}>
+          <p className="text-stone-500" style={{ fontSize: '0.6rem' }}>{run.mode === 'short' ? 'SHORT' : 'LONG'} RANK</p>
+          <p className="font-display" style={{ fontSize: '1.3rem', color: delta >= 0 ? 'var(--signal-valid)' : 'var(--signal-invalid)' }}>{delta >= 0 ? '+' : ''}{delta}</p>
+          <p className="text-gold-200 mt-0.5" style={{ fontSize: '0.66rem' }}>{rankLabel(myRating(rank, run.mode))}</p>
+        </div>
       </div>
       <button onClick={onNext} className="w-full rounded-sm font-display uppercase tracking-widest py-3" style={GOLD_BTN}>次へ ▶</button>
     </div>
