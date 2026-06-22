@@ -1,7 +1,8 @@
-// 神楽マキナ :: deterministic circuit auto-battle (energy economy + shared statuses).
+// 神楽マキナ Ver0.2 :: deterministic circuit auto-battle (energy economy + shared
+// statuses + two-layer tile bonuses).
 import { makeRng } from '../arena/rng';
-import { itemById, statMul } from './data';
-import { JOBS } from './data';
+import { JOBS, itemById } from './data';
+import { poweredItemIds, tileBonuses } from './grid';
 import {
   CRASH_DURATION,
   EMPTY_STATUS,
@@ -14,18 +15,60 @@ import {
   VIRUS_DPS_PER_STACK,
   clone,
 } from './status';
-import type { BattleFrame, BattleResult, BattleSim, Combatant, JobId, Module, PlacedItem, StatusKey } from './types';
+import type {
+  BattleFrame,
+  BattleResult,
+  BattleSim,
+  CategoryBuff,
+  Combatant,
+  CountScaling,
+  ItemCategory,
+  JobId,
+  Module,
+  PlacedItem,
+  PlacedTile,
+  StatusKey,
+  TileBonuses,
+} from './types';
 
 const BASE_ENERGY = 5;
 const BASE_REGEN = 1;
+const CLOCK_HASTE = 0.15; // a clock-tile module fires 15% faster (per-module)
+const POWER_CRIT = 0.12; // a power-tile module gains +12% crit
 
-/** Resolve a placed circuit into a Combatant. */
-export function resolveBoard(name: string, job: JobId, board: PlacedItem[]): Combatant {
+/** Resolve a placed circuit (item layer + tile layer) into a Combatant. */
+export function resolveBoard(
+  name: string,
+  job: JobId,
+  items: PlacedItem[],
+  tiles: PlacedTile[],
+  opts?: { allPowered?: boolean },
+): Combatant {
   const j = JOBS[job];
+
+  // Determine which items are powered + the tile bonuses.
+  let poweredItems: Set<string>;
+  let bonuses: TileBonuses;
+  if (opts?.allPowered) {
+    poweredItems = new Set(items.map((p) => p.id));
+    // synthesize generous bonuses for AI opponents (no connectivity needed)
+    bonuses = {
+      maxEnergy: 2,
+      startShield: 0,
+      hasteItemIds: new Set(items.map((p) => p.id)),
+      critItemIds: new Set(items.map((p) => p.id)),
+    };
+  } else {
+    poweredItems = poweredItemIds(tiles, items);
+    bonuses = tileBonuses(tiles, items);
+  }
+
+  const live = items.filter((p) => poweredItems.has(p.id));
+
   let maxHp = j.startingHp;
-  let maxEnergy = BASE_ENERGY;
+  let maxEnergy = BASE_ENERGY + bonuses.maxEnergy;
   let energyRegen = BASE_REGEN;
-  let startShield = 0;
+  let startShield = bonuses.startShield;
   let baseCrit = 0;
   let baseCritDmg = 0;
   let baseAccuracy = 1;
@@ -33,55 +76,95 @@ export function resolveBoard(name: string, job: JobId, board: PlacedItem[]): Com
   let thorns = 0;
   let firewall = false;
   let power = 0;
+  const categoryBuffs: CategoryBuff[] = [];
+  const countScaling: CountScaling[] = [];
 
-  for (const p of board) {
+  // count powered items per category (for countScaling)
+  const catCount: Record<ItemCategory, number> = { melee: 0, ranged: 0, accessory: 0, armor: 0 };
+  for (const p of live) {
+    const it = itemById(p.key);
+    if (it?.category) catCount[it.category] += 1;
+  }
+
+  for (const p of live) {
     const it = itemById(p.key);
     if (!it?.support) continue;
-    const m = statMul(p.level ?? 1);
     const s = it.support;
-    if (s.hp) maxHp += Math.round(s.hp * m);
-    if (s.maxEnergy) maxEnergy += s.maxEnergy; // integer, unscaled
-    if (s.energyRegen) energyRegen += s.energyRegen * m;
-    if (s.shieldStart) startShield += Math.round(s.shieldStart * m);
+    if (s.hp) maxHp += s.hp;
+    if (s.maxEnergy) maxEnergy += s.maxEnergy;
+    if (s.energyRegen) energyRegen += s.energyRegen;
+    if (s.shieldStart) startShield += s.shieldStart;
     if (s.crit) baseCrit += s.crit;
     if (s.critDmg) baseCritDmg += s.critDmg;
     if (s.accuracy) baseAccuracy += s.accuracy;
     if (s.haste) hasteMul += s.haste;
-    if (s.thorns) thorns += Math.round(s.thorns * m);
-    if (s.power) power += s.power * m;
+    if (s.thorns) thorns += s.thorns;
+    if (s.power) power += s.power;
     if (s.firewall) firewall = true;
+    if (s.categoryBuffs) categoryBuffs.push(...s.categoryBuffs);
+    if (s.countScaling) countScaling.push(...s.countScaling);
   }
 
+  // count-referencing buffs (e.g. shieldPer × count of a category)
+  for (const cs of countScaling) {
+    const n = catCount[cs.category] ?? 0;
+    if (cs.shieldPer) startShield += cs.shieldPer * n;
+    if (cs.hpPer) maxHp += cs.hpPer * n;
+    if (cs.powerPer) power += cs.powerPer * n;
+  }
+
+  // category buff lookups
+  const catDmg = (cat: ItemCategory | null): number => {
+    if (!cat) return 0;
+    return categoryBuffs.filter((b) => b.category === cat).reduce((s, b) => s + (b.dmg ?? 0), 0);
+  };
+  const catCrit = (cat: ItemCategory | null): number => {
+    if (!cat) return 0;
+    return categoryBuffs.filter((b) => b.category === cat).reduce((s, b) => s + (b.crit ?? 0), 0);
+  };
+  const catHaste = (cat: ItemCategory | null): number => {
+    if (!cat) return 0;
+    return categoryBuffs.filter((b) => b.category === cat).reduce((s, b) => s + (b.hastePct ?? 0), 0);
+  };
+
   const modules: Module[] = [];
-  for (const p of board) {
+  for (const p of live) {
     const it = itemById(p.key);
     if (!it?.weapon) continue;
-    const m = statMul(p.level ?? 1);
     const w = it.weapon;
+    const onClock = bonuses.hasteItemIds.has(p.id);
+    const onPower = bonuses.critItemIds.has(p.id);
+    const hPct = catHaste(it.category); // +% speed via category buff
     modules.push({
+      id: p.id,
       key: p.key,
       nameJa: it.nameJa,
       sprite: it.sprite,
+      category: it.category,
       weapon: {
-        dmg: Math.round(w.dmg * m + power),
-        cd: w.cd,
+        dmg: Math.round(w.dmg + power + catDmg(it.category)),
+        // bake category haste into the per-weapon cooldown (clock tile handled in sim)
+        cd: hPct > 0 ? w.cd / (1 + hPct) : w.cd,
         energy: w.energy,
         accuracy: w.accuracy,
-        crit: w.crit,
-        critDmg: w.critDmg,
+        crit: (w.crit ?? 0) + catCrit(it.category),
+        critMult: w.critMult,
         pierce: w.pierce,
-        applies: w.applies?.map((a) => ({ status: a.status, amount: a.status === 'crash' ? a.amount : Math.max(1, Math.round(a.amount * m)) })),
-        detonate: w.detonate ? { status: w.detonate.status, perStack: Math.round(w.detonate.perStack * m) } : undefined,
-        reference: w.reference ? { status: w.reference.status, mult: w.reference.mult * m } : undefined,
+        applies: w.applies?.map((a) => ({ status: a.status, amount: a.amount, chance: a.chance })),
+        detonate: w.detonate,
+        reference: w.reference,
         selfShield: w.selfShield,
         heal: w.heal,
       },
+      haste: onClock,
+      critBonus: onPower ? POWER_CRIT : 0,
     });
   }
 
   return {
-    name, job, maxHp: Math.max(1, maxHp), maxEnergy, energyRegen, startShield,
-    baseCrit, baseCritDmg, baseAccuracy, hasteMul, thorns, firewall, modules,
+    name, job, maxHp: Math.max(1, Math.round(maxHp)), maxEnergy, energyRegen,
+    startShield: Math.round(startShield),
+    baseCrit, baseCritDmg, baseAccuracy, hasteMul, thorns: Math.round(thorns), firewall, modules,
   };
 }
 
@@ -118,7 +201,7 @@ export function simulate(player: Combatant, enemy: Combatant, seed: number, maxT
   const fire = (src: Side, dst: Side, mIdx: number) => {
     const m = src.c.modules[mIdx];
     const w = m.weapon;
-    // accuracy is reduced by the firing side's own jam stacks
+    // accuracy reduced by the firing side's own jam stacks
     const acc = Math.max(0.1, (w.accuracy ?? src.c.baseAccuracy) - Math.min(JAM_CAP, src.status.jam * JAM_PER_STACK));
     if (rng() >= acc) return; // miss (energy already spent)
 
@@ -131,8 +214,9 @@ export function simulate(player: Combatant, enemy: Combatant, seed: number, maxT
         dst.status[w.detonate.status] = 0;
       }
     }
-    const critChance = src.c.baseCrit + (w.crit ?? 0);
-    if (critChance > 0 && rng() < critChance) dmg = Math.round(dmg * (2 + src.c.baseCritDmg + (w.critDmg ?? 0)));
+    const critChance = src.c.baseCrit + (w.crit ?? 0) + m.critBonus;
+    if (critChance > 0 && rng() < critChance) dmg = Math.round(dmg * ((w.critMult ?? 2) + src.c.baseCritDmg));
+    // overvolt amp: +1%/stack on the target
     dmg = Math.round(dmg * (1 + dst.status.overvolt * OVERVOLT_PER_STACK));
 
     if (dmg > 0) {
@@ -147,8 +231,9 @@ export function simulate(player: Combatant, enemy: Combatant, seed: number, maxT
     if (w.heal) src.hp = Math.min(src.c.maxHp, src.hp + w.heal);
 
     for (const a of w.applies ?? []) {
+      if ((a.chance ?? 1) < 1 && rng() >= (a.chance ?? 1)) continue;
       if (a.status === 'crash') {
-        // stop a random non-stopped enemy module
+        // stop a random non-stopped enemy module ~2s
         const cand = dst.c.modules.map((_, i) => i).filter((i) => dst.stoppedUntil[i] <= t);
         if (cand.length) dst.stoppedUntil[cand[Math.floor(rng() * cand.length)]] = t + CRASH_DURATION;
         continue;
@@ -159,17 +244,16 @@ export function simulate(player: Combatant, enemy: Combatant, seed: number, maxT
   };
 
   const tickSide = (s: Side, foe: Side) => {
-    // energy regen, disrupted by memory-leak
     const regen = Math.max(0, s.c.energyRegen - s.status.memleak * MEMLEAK_PER_STACK);
     s.energy = Math.min(s.c.maxEnergy, s.energy + regen * dt);
-    // virus damage over time
     if (s.status.virus > 0) s.hp -= s.status.virus * VIRUS_DPS_PER_STACK * dt;
-    // weapons
     const speed = s.c.hasteMul * (1 - Math.min(FREEZE_CAP, s.status.freeze * FREEZE_PER_STACK));
     for (let i = 0; i < s.c.modules.length; i++) {
       if (s.stoppedUntil[i] > t) continue; // crashed
-      s.timers[i] += dt * speed;
-      const w = s.c.modules[i].weapon;
+      const m = s.c.modules[i];
+      const mSpeed = speed * (m.haste ? 1 + CLOCK_HASTE : 1);
+      s.timers[i] += dt * mSpeed;
+      const w = m.weapon;
       while (s.timers[i] >= w.cd) {
         if (s.energy < w.energy) {
           s.timers[i] = w.cd; // ready but starved — hold until energy returns
