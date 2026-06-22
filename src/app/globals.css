@@ -264,6 +264,21 @@ body {
   }
 }
 
+/* Battle impact pop — a quick scale-up + fade for hit effects. */
+@keyframes gsfxpop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4) rotate(-8deg);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.35) rotate(6deg);
+  }
+}
+
 /* ============================================================
    Accessibility: respect reduced-motion. Disables decorative
    loops (rose spin, auras, twinkles) and snaps transitions.
