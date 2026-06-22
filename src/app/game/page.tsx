@@ -342,6 +342,9 @@ function Home(props: {
   return (
     <div className="flex flex-col gap-4" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)' }}>
       <header className="text-center pt-2">
+        <div className="flex justify-center mb-1">
+          <ItemSprite id="hero" size={92} className="opacity-95" />
+        </div>
         <p className="gs-eyebrow opacity-80">BUREAU OF CARDINAL OBSERVATION</p>
         <h1 className="font-display font-bold tracking-widest mt-1" style={{ fontSize: 'clamp(1.8rem,8vw,2.6rem)' }}>
           <span style={{ background: 'linear-gradient(180deg,var(--gold-200),var(--gold-500))', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>GRID STELLA</span>
@@ -573,6 +576,10 @@ function Battle({ sim, frameIdx, opp, playerName, run, onSkip, onDone }: {
   sim: BattleSim; frameIdx: number; opp: { name: string; rating: number; isGhost: boolean; job: JobId }; playerName: string; run: RunState; onSkip: () => void; onDone: () => void;
 }) {
   const f = sim.frames[Math.min(frameIdx, sim.frames.length - 1)] ?? { t: 0, pHp: sim.pMaxHp, pShield: 0, eHp: sim.eMaxHp, eShield: 0 };
+  const prev = frameIdx > 0 ? sim.frames[frameIdx - 1] : null;
+  // flash an impact when a side loses a meaningful chunk of HP between frames
+  const eHit = prev && prev.eHp - f.eHp > sim.eMaxHp * 0.02 ? frameIdx : null;
+  const pHit = prev && prev.pHp - f.pHp > sim.pMaxHp * 0.02 ? frameIdx : null;
   const done = frameIdx >= sim.frames.length - 1;
   const shown = Math.floor((frameIdx / Math.max(1, sim.frames.length - 1)) * (sim.logs.length - 1)) + 1;
   const logsToShow = sim.logs.slice(0, Math.max(1, Math.min(sim.logs.length, shown)));
@@ -581,9 +588,9 @@ function Battle({ sim, frameIdx, opp, playerName, run, onSkip, onDone }: {
   return (
     <div className="flex flex-col gap-3" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)' }}>
       <p className="text-center gs-eyebrow">第 {run.round} 観測 — {run.mode === 'short' ? 'SHORT' : 'LONG'}</p>
-      <HpBar name={playerName} sub={JOBS[run.job].nameJa} hp={f.pHp} shield={f.pShield} max={sim.pMaxHp} mine />
+      <HpBar name={playerName} sub={JOBS[run.job].nameJa} hp={f.pHp} shield={f.pShield} max={sim.pMaxHp} mine hit={pHit} fx="fx_burst" />
       <div className="text-center text-stone-500" style={{ fontSize: '0.7rem' }}>{f.t.toFixed(1)}秒</div>
-      <HpBar name={opp.name} sub={`${opp.isGhost ? '残響' : 'PvE影'} · ${opp.rating}pt`} hp={f.eHp} shield={f.eShield} max={sim.eMaxHp} />
+      <HpBar name={opp.name} sub={`${opp.isGhost ? '残響' : 'PvE影'} · ${opp.rating}pt`} hp={f.eHp} shield={f.eShield} max={sim.eMaxHp} hit={eHit} fx="fx_slash" />
 
       <div ref={logRef} className="rounded-md p-2 overflow-y-auto" style={{ background: 'var(--ink-900)', border: '1px solid var(--gold-line-20)', height: 150, fontSize: '0.66rem', fontFamily: 'var(--font-mono)' }}>
         {logsToShow.map((l, i) => (<div key={i} className="text-stone-300 leading-relaxed">› {l}</div>))}
@@ -598,10 +605,15 @@ function Battle({ sim, frameIdx, opp, playerName, run, onSkip, onDone }: {
   );
 }
 
-function HpBar({ name, sub, hp, shield, max, mine }: { name: string; sub: string; hp: number; shield: number; max: number; mine?: boolean }) {
+function HpBar({ name, sub, hp, shield, max, mine, hit, fx }: { name: string; sub: string; hp: number; shield: number; max: number; mine?: boolean; hit?: number | null; fx?: string }) {
   const pct = Math.max(0, Math.min(100, (hp / max) * 100));
   return (
-    <div className="rounded-md p-2.5" style={{ background: 'var(--surface-card)', border: `1px solid ${mine ? 'var(--gold-line-40)' : 'rgba(192,82,74,0.45)'}` }}>
+    <div className="relative rounded-md p-2.5" style={{ background: 'var(--surface-card)', border: `1px solid ${mine ? 'var(--gold-line-40)' : 'rgba(192,82,74,0.45)'}` }}>
+      {hit != null && fx && (
+        <span key={hit} aria-hidden="true" className="pointer-events-none absolute" style={{ left: `${pct}%`, top: '60%', transform: 'translate(-50%,-50%)', animation: 'gsfxpop 0.45s var(--ease-out) forwards', zIndex: 2 }}>
+          <ItemSprite id={fx} size={34} />
+        </span>
+      )}
       <div className="flex items-baseline justify-between mb-1">
         <span className="font-display" style={{ fontSize: '0.8rem', color: mine ? 'var(--gold-200)' : 'var(--text-primary)' }}>{name}</span>
         <span className="text-stone-500" style={{ fontSize: '0.6rem' }}>{sub}</span>

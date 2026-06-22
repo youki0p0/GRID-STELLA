@@ -59,6 +59,14 @@ JOBS = {
 HERO = {
     "hero": "a grand ornate circular brass astrolabe / star-chart observation dial glowing with gold constellations on a black starfield, dark-fantasy key art emblem",
 }
+EFFECTS = {
+    "fx_slash": "a bright diagonal sword slash arc, white-gold energy streak",
+    "fx_burst": "a small orange-gold explosion burst, radial spikes",
+    "fx_poison": "a green toxic splat / bubbling venom cloud puff",
+    "fx_shield": "a translucent steel-blue hexagonal shield ward glint",
+    "fx_heal": "a soft green-gold healing sparkle / plus-cross of light",
+    "fx_crit": "a sharp red-gold critical impact star-burst, sparks",
+}
 
 
 def gen(prompt, size="1024x1024", quality="low"):
@@ -83,12 +91,19 @@ def pixelate(raw_bytes, size=64, colors=28):
     return Image.merge("RGBA", (rr, gg, bb, a))
 
 
-def make(idd, prompt, px=64, size="1024x1024", quality="low"):
+EFFECT_STYLE = (
+    "pixel-art particle / VFX sprite, bold flat colors, thick clean edges, "
+    "NO frame, NO circle, NO border ring, NO badge, NO background panel, fully "
+    "transparent background, the effect fills the canvas edge-to-edge, no text"
+)
+
+
+def make(idd, prompt, px=64, size="1024x1024", quality="low", style=STYLE):
     out_path = os.path.join(OUT, f"{idd}.png")
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         print(f"skip {idd}")
         return True
-    full = f"{prompt}. {STYLE}."
+    full = f"{prompt}. {style}."
     for attempt in range(3):
         try:
             raw = gen(full, size=size, quality=quality)
@@ -112,6 +127,8 @@ def main():
     ok = fail = 0
     for idd, p in {**ITEMS, **JOBS}.items():
         (ok := ok + 1) if make(idd, p, px=64) else (fail := fail + 1)
+    for idd, p in EFFECTS.items():
+        (ok := ok + 1) if make(idd, p, px=64, style=EFFECT_STYLE) else (fail := fail + 1)
     for idd, p in HERO.items():
         (ok := ok + 1) if make(idd, p, px=144, quality="medium") else (fail := fail + 1)
     print(f"DONE ok={ok} fail={fail}")
