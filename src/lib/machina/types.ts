@@ -1,62 +1,75 @@
-// 神楽マキナ — 機械神の回路 :: domain types (CANONICAL, see docs/MACHINA.md).
-// A circuit-building auto-battler: weapons & support modules draw energy from a
-// core. Jobs differ only by how they use shared status effects (accumulate /
-// detonate / reference), never by bespoke per-job rules.
+// 神楽マキナ — 機械神の回路 :: domain types (CANONICAL Ver0.2, see docs/MACHINA.md).
+// Circuit-building auto-battler. This file is the shared CONTRACT every module
+// codes against — keep export names/shapes stable.
 
 export type JobId = 'striker' | 'gunner' | 'caster';
 export type Mode = 'short' | 'long';
-export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
+
+/** 5 standard rarities; unique items are flagged via Item.unique. */
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary' | 'mythic';
+
+/** Item categories — effects can reference these. */
+export type ItemCategory = 'melee' | 'ranged' | 'accessory' | 'armor';
 
 /** Shared, small status-effect set (全ジョブ共通). */
-export type StatusKey =
-  | 'overvolt' // 過電圧 — target takes +1% damage per stack (stacks)
-  | 'virus' // ウイルス — damage over time (stacks)
-  | 'jam' // ジャミング — accuracy down (stacks)
-  | 'freeze' // フリーズ — item speed down (stacks)
-  | 'memleak' // メモリリーク — energy regen disruption (stacks)
-  | 'crash'; // クラッシュ — stop an enemy item for a duration (no stack)
-
+export type StatusKey = 'overvolt' | 'virus' | 'jam' | 'freeze' | 'memleak' | 'crash';
 export const STACK_STATUSES: StatusKey[] = ['overvolt', 'virus', 'jam', 'freeze', 'memleak'];
-
-/** Live status amounts on a combatant. */
 export type StatusState = Record<StatusKey, number>;
 
-/** Grid tile kinds. Tiles must chain back to the core to be powered. */
-export type TileKind = 'core' | 'plain' | 'shield' | 'clock' | 'battery' | 'power';
+/** A status application; `chance` 0..1 defaults to 1 (always). */
+export interface StatusApply {
+  status: StatusKey;
+  amount: number;
+  chance?: number;
+}
 
 /** A periodic weapon. Fires when CD elapsed AND energy >= cost. */
 export interface Weapon {
   dmg: number;
   cd: number; // seconds
-  energy: number; // cost per activation
-  accuracy?: number; // base hit chance 0..1 (default 1)
-  crit?: number; // base crit chance bonus 0..1
-  critDmg?: number; // crit damage multiplier bonus (added to base 2x as +x)
-  pierce?: number; // shield ignored on hit
-  /** statuses applied to the foe on hit */
-  applies?: { status: StatusKey; amount: number }[];
-  /** 起爆 (striker): consume the foe's stacks of `status`, dealing perStack each */
-  detonate?: { status: StatusKey; perStack: number };
-  /** 参照 (caster): bonus damage = foe's current `status` value × mult */
-  reference?: { status: StatusKey; mult: number };
-  /** self effects */
+  energy: number; // cost per activation (stamina)
+  accuracy?: number; // 0..1 base hit chance (default 1)
+  crit?: number; // 0..1 base crit chance
+  critMult?: number; // crit damage multiplier (e.g. 1.5 = 150%); default 2
+  pierce?: number; // shield ignored
+  applies?: StatusApply[]; // chance-based status application
+  detonate?: { status: StatusKey; perStack: number }; // 起爆 (striker)
+  reference?: { status: StatusKey; mult: number }; // 参照 (caster)
   selfShield?: number;
   heal?: number;
 }
 
-/** Passive board contribution of a support module. */
+/** Buff a whole category of equipped items. */
+export interface CategoryBuff {
+  category: ItemCategory;
+  dmg?: number; // flat weapon dmg + for that category
+  hastePct?: number; // speed +% for that category
+  crit?: number; // crit + for that category
+}
+
+/** Scale a stat by how many items of a category are equipped. */
+export interface CountScaling {
+  category: ItemCategory;
+  shieldPer?: number;
+  hpPer?: number;
+  powerPer?: number;
+}
+
+/** Passive board contribution of an accessory/armor (support) module. */
 export interface Support {
-  power?: number; // 強化 — flat weapon dmg +
-  haste?: number; // 加速 — speed +% (e.g. 0.1)
+  power?: number; // 強化 flat weapon dmg+
+  haste?: number; // 加速 speed +% (0.1 = +10%)
   maxEnergy?: number; // 最大エネルギー +
   energyRegen?: number; // エネルギー回復 +/s
-  crit?: number; // クリティカル率 +
-  critDmg?: number; // クリティカルダメージ +
+  crit?: number; // クリ率 +
+  critDmg?: number; // クリダメ + (added to crit multiplier)
   accuracy?: number; // 命中 +
   shieldStart?: number; // 戦闘開始時シールド
-  thorns?: number; // トゲ — fixed reflect on being hit
-  firewall?: boolean; // ファイアウォール — immune to new debuffs
-  hp?: number; // bonus max HP
+  thorns?: number; // トゲ 固定反射
+  firewall?: boolean; // ファイアウォール デバフ無効
+  hp?: number; // 最大HP +
+  categoryBuffs?: CategoryBuff[]; // type-referencing buffs
+  countScaling?: CountScaling[]; // count-referencing buffs
 }
 
 export interface Item {
@@ -65,7 +78,8 @@ export interface Item {
   nameEn: string;
   sprite: string;
   rarity: Rarity;
-  job: JobId | null; // null = common (all jobs)
+  job: JobId | null; // null = common
+  category: ItemCategory | null; // null = pure grid/relic style (rare)
   cost: number;
   w: number;
   h: number;
@@ -73,6 +87,7 @@ export interface Item {
   desc: string;
   weapon?: Weapon;
   support?: Support;
+  unique?: boolean; // unique special item (R5 pick)
 }
 
 export interface PlacedItem {
@@ -81,9 +96,44 @@ export interface PlacedItem {
   x: number;
   y: number;
   rot: 0 | 1;
-  level?: number; // merge tier
+  level?: number; // merge progression marker (kept for compat; Ver0.2 uses recipes)
 }
 
+/* ── two-layer grid ── */
+export type TileKind = 'plain' | 'shield' | 'clock' | 'battery' | 'power';
+
+export interface TileDef {
+  kind: TileKind;
+  w: number;
+  h: number;
+  nameJa: string;
+  desc: string;
+}
+
+export interface PlacedTile {
+  id: string;
+  kind: TileKind;
+  x: number;
+  y: number;
+  rot: 0 | 1;
+}
+
+/** Aggregated tile-layer bonuses for a board. */
+export interface TileBonuses {
+  maxEnergy: number; // battery tiles
+  startShield: number; // shield tiles
+  hasteItemIds: Set<string>; // items overlapping a clock tile
+  critItemIds: Set<string>; // items overlapping a power tile
+}
+
+/* ── recipes / merge (Ver0.2 adjacency-material fusion) ── */
+export interface Recipe {
+  base: string; // base item key
+  material: string; // material item key placed adjacent
+  result: string; // fused result key
+}
+
+/* ── jobs ── */
 export interface Job {
   id: JobId;
   nameJa: string;
@@ -92,21 +142,24 @@ export interface Job {
   role: string;
   tagline: string;
   desc: string;
-  /** which shared statuses this job leans on */
   favors: StatusKey[];
-  /** how it uses statuses */
   style: 'detonate' | 'accumulate' | 'reference';
   startingHp: number;
   startingGold: number;
+  startingWeapon: string; // job's initial weapon key (育成の起点)
   tactics: { nameJa: string; desc: string }[];
 }
 
 /* ── battle ── */
 export interface Module {
+  id: string;
   key: string;
   nameJa: string;
   sprite: string;
+  category: ItemCategory | null;
   weapon: Weapon;
+  haste: boolean; // on a clock tile
+  critBonus: number; // from power tile
 }
 
 export interface Combatant {
