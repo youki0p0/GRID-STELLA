@@ -53,7 +53,7 @@ export function pendingMerges(items: PlacedItem[]): { baseId: string; materialId
  * Apply all pending merges: consume each material, replace each base's key with
  * the result (keeping its position and id). Used at shop-phase start.
  */
-export function applyMerges(items: PlacedItem[]): { items: PlacedItem[]; fused: { result: string }[] } {
+export function applyMerges(items: PlacedItem[]): { items: PlacedItem[]; fused: { result: string; baseId: string }[] } {
   const merges = pendingMerges(items);
   if (merges.length === 0) return { items, fused: [] };
   const consumed = new Set(merges.map((m) => m.materialId));
@@ -64,7 +64,8 @@ export function applyMerges(items: PlacedItem[]): { items: PlacedItem[]; fused: 
     const result = replace.get(p.id);
     next.push(result ? { ...p, key: result } : p);
   }
-  return { items: next, fused: merges.map((m) => ({ result: m.result })) };
+  // `baseId` is the surviving cell (keeps its id/position) so the UI can flash it.
+  return { items: next, fused: merges.map((m) => ({ result: m.result, baseId: m.baseId })) };
 }
 
 /** Ids of bases + materials currently forming a valid adjacency (UI highlight). */

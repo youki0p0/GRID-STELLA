@@ -45,6 +45,7 @@ interface Props {
   run: RunState;
   powered: Set<string>;
   mergeIds: Set<string>;
+  fusedIds?: Set<string>;
   tray: TileTrayEntry[];
   onCommitItem: (p: PlacedItem, x: number, y: number, rot: 0 | 1) => void;
   onRotateItem: (id: string) => void;
@@ -64,7 +65,7 @@ const pointInRect = (el: HTMLElement | null, x: number, y: number) => {
 
 export function CircuitBoard(props: Props) {
   const {
-    run, powered, mergeIds, tray,
+    run, powered, mergeIds, fusedIds, tray,
     onCommitItem, onRotateItem, onSellItem, onCommitTile, onMoveTile, onRecallTile, onTapItem,
   } = props;
 
@@ -296,6 +297,7 @@ export function CircuitBoard(props: Props) {
             const tone = RARITY_META[it.rarity].tone;
             const isPowered = powered.has(p.id);
             const isMerge = mergeIds.has(p.id);
+            const isFused = fusedIds?.has(p.id) ?? false;
             return (
               <button
                 key={p.id}
@@ -311,11 +313,18 @@ export function CircuitBoard(props: Props) {
               >
                 <span className="w-full h-full flex items-center justify-center rounded-sm relative" style={{
                   background: 'var(--ink-850, var(--ink-900))',
-                  border: `1px solid ${isMerge ? 'var(--signal-valid)' : `${tone}99`}`,
+                  border: `1px solid ${isFused ? 'var(--gold-300)' : isMerge ? 'var(--signal-valid)' : `${tone}99`}`,
                   boxShadow: isMerge ? '0 0 9px rgba(111,174,126,0.7)' : 'inset 0 0 8px rgba(0,0,0,0.6)',
+                  ...(isFused ? { animation: 'gsfuse 1s var(--ease-out)' } : null),
                 }}>
                   <ItemSprite id={it.sprite} size={Math.min(w, h) >= 2 ? 52 : 30} />
                   {!isPowered && <span className="absolute inset-0 flex items-center justify-center" style={{ fontSize: '0.7rem', color: 'var(--signal-invalid)', textShadow: '0 0 3px #000' }}>⚡✕</span>}
+                  {isFused && (
+                    <span className="absolute pointer-events-none" aria-hidden style={{
+                      top: -6, right: -4, fontSize: '0.8rem', color: 'var(--gold-200)',
+                      textShadow: '0 0 6px rgba(224,185,74,0.9)', animation: 'gsfusestar 0.9s var(--ease-out)',
+                    }}>★</span>
+                  )}
                 </span>
               </button>
             );
