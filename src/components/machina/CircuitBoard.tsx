@@ -45,7 +45,8 @@ interface Props {
   run: RunState;
   powered: Set<string>;
   mergeIds: Set<string>;
-  fusedIds?: Set<string>;
+  fusedOrder?: Map<string, number>;
+  previewMap?: Map<string, string>;
   tray: TileTrayEntry[];
   onCommitItem: (p: PlacedItem, x: number, y: number, rot: 0 | 1) => void;
   onRotateItem: (id: string) => void;
@@ -65,7 +66,7 @@ const pointInRect = (el: HTMLElement | null, x: number, y: number) => {
 
 export function CircuitBoard(props: Props) {
   const {
-    run, powered, mergeIds, fusedIds, tray,
+    run, powered, mergeIds, fusedOrder, previewMap, tray,
     onCommitItem, onRotateItem, onSellItem, onCommitTile, onMoveTile, onRecallTile, onTapItem,
   } = props;
 
@@ -297,13 +298,16 @@ export function CircuitBoard(props: Props) {
             const tone = RARITY_META[it.rarity].tone;
             const isPowered = powered.has(p.id);
             const isMerge = mergeIds.has(p.id);
-            const isFused = fusedIds?.has(p.id) ?? false;
+            const fuseIdx = fusedOrder?.get(p.id);
+            const isFused = fuseIdx !== undefined;
+            const previewKey = previewMap?.get(p.id);
+            const previewItem = previewKey ? itemById(previewKey) : null;
             return (
               <button
                 key={p.id}
                 onPointerDown={(e) => onPointerDown(e, { type: 'item-move', item: p })}
                 className="absolute flex items-center justify-center select-none"
-                title={`${it.nameJa} — タップで詳細なし（移動/回転）`}
+                title={previewItem ? `${it.nameJa} → ${previewItem.nameJa} へ昇華予定（隣接素材）` : `${it.nameJa} — タップで詳細なし（移動/回転）`}
                 style={{
                   left: `${(p.x / GRID_W) * 100}%`, top: `${(p.y / GRID_H) * 100}%`,
                   width: `${(w / GRID_W) * 100}%`, height: `${(h / GRID_H) * 100}%`,
@@ -315,14 +319,21 @@ export function CircuitBoard(props: Props) {
                   background: 'var(--ink-850, var(--ink-900))',
                   border: `1px solid ${isFused ? 'var(--gold-300)' : isMerge ? 'var(--signal-valid)' : `${tone}99`}`,
                   boxShadow: isMerge ? '0 0 9px rgba(111,174,126,0.7)' : 'inset 0 0 8px rgba(0,0,0,0.6)',
-                  ...(isFused ? { animation: 'gsfuse 1s var(--ease-out)' } : null),
+                  ...(isFused ? { animation: 'gsfuse 1s var(--ease-out) both', animationDelay: `${(fuseIdx ?? 0) * 0.13}s` } : null),
                 }}>
                   <ItemSprite id={it.sprite} size={Math.min(w, h) >= 2 ? 52 : 30} />
                   {!isPowered && <span className="absolute inset-0 flex items-center justify-center" style={{ fontSize: '0.7rem', color: 'var(--signal-invalid)', textShadow: '0 0 3px #000' }}>⚡✕</span>}
+                  {/* pending-fusion preview: this cell survives and becomes previewItem */}
+                  {previewItem && !isFused && (
+                    <span className="absolute pointer-events-none flex items-center justify-center rounded-full" aria-hidden title={`→ ${previewItem.nameJa}`} style={{
+                      top: -5, left: -4, width: 14, height: 14, fontSize: '0.62rem', lineHeight: 1,
+                      color: 'var(--ink-950)', background: 'var(--gold-300)', boxShadow: '0 0 5px rgba(224,185,74,0.8)',
+                    }}>⤴</span>
+                  )}
                   {isFused && (
                     <span className="absolute pointer-events-none" aria-hidden style={{
                       top: -6, right: -4, fontSize: '0.8rem', color: 'var(--gold-200)',
-                      textShadow: '0 0 6px rgba(224,185,74,0.9)', animation: 'gsfusestar 0.9s var(--ease-out)',
+                      textShadow: '0 0 6px rgba(224,185,74,0.9)', animation: 'gsfusestar 0.9s var(--ease-out) both', animationDelay: `${(fuseIdx ?? 0) * 0.13}s`,
                     }}>★</span>
                   )}
                 </span>

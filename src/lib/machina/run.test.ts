@@ -11,7 +11,7 @@ import {
   sellValue,
   shouldOfferUnique,
 } from './run';
-import { applyMerges, mergeCandidateIds, pendingMerges } from './merge';
+import { applyMerges, mergeCandidateIds, mergePreview, pendingMerges } from './merge';
 import { itemById } from './data';
 import type { PlacedItem } from './types';
 
@@ -153,6 +153,14 @@ describe('adjacency-material fusion (merge)', () => {
     expect(fused[0].baseId).toBe('b');
     // the flagged cell is exactly the survivor that kept its id
     expect(next.find((p) => p.id === fused[0].baseId)).toBeTruthy();
+  });
+
+  it('mergePreview maps the surviving base to its fusion result', () => {
+    const items = [item('b', 'st_breaker', 1, 0), item('m', 'mat_barrel', 2, 0), item('x', 'dart', 5, 4)];
+    const prev = mergePreview(items);
+    expect(prev.get('b')).toBe('st_breaker_mk2');
+    expect(prev.has('m')).toBe(false); // material is consumed, not previewed
+    expect(prev.has('x')).toBe(false);
   });
 
   it('mergeCandidateIds highlights both base and material', () => {
