@@ -233,10 +233,11 @@ export function CircuitBoard(props: Props) {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      className="flex flex-col min-h-0 flex-1 gap-2"
       style={{ touchAction: 'none' }}
     >
       {/* tile tray */}
-      <div className="rounded-md p-2 mb-2" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
+      <div className="rounded-md p-2 shrink-0" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
         <p className="gs-eyebrow mb-1" style={{ fontSize: '0.55rem' }}>タイル工房 — TILE TRAY（コアから配線して通電）</p>
         <div className="flex flex-wrap gap-1.5">
           {tray.length === 0 && <span className="text-stone-500" style={{ fontSize: '0.62rem' }}>在庫なし。次の回路で補充される。</span>}
@@ -260,9 +261,10 @@ export function CircuitBoard(props: Props) {
         </div>
       </div>
 
-      {/* board */}
-      <div className="rounded-md p-2" style={{ background: 'var(--surface-panel)', border: '1px solid var(--gold-line-40)' }}>
-        <div ref={boardRef} className="relative w-full" style={{ aspectRatio: `${GRID_W}/${GRID_H}`, touchAction: 'none' }}>
+      {/* board — absorbs leftover height, kept square and capped by width */}
+      <div className="rounded-md p-2 flex-1 min-h-0 flex flex-col" style={{ background: 'var(--surface-panel)', border: '1px solid var(--gold-line-40)' }}>
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+        <div ref={boardRef} className="relative" style={{ height: '100%', maxWidth: '100%', aspectRatio: `${GRID_W}/${GRID_H}`, touchAction: 'none' }}>
           {/* base grid cells + drop preview */}
           <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${GRID_W},1fr)`, gridTemplateRows: `repeat(${GRID_H},1fr)`, gap: 2 }}>
             {Array.from({ length: GRID_W * GRID_H }).map((_, i) => {
@@ -361,14 +363,15 @@ export function CircuitBoard(props: Props) {
             );
           })}
         </div>
+        </div>
 
-        <p className="text-center text-stone-500 mt-1.5" style={{ fontSize: '0.56rem' }}>
-          回路盤 {GRID_W}×{GRID_H} · ⚛コアからタイルを繋いで通電 · 装置をタップで回転 · 控えから盤へドラッグ
+        <p className="text-center text-stone-500 mt-1 shrink-0 truncate" style={{ fontSize: '0.54rem' }}>
+          回路盤 {GRID_W}×{GRID_H} · ⚛コアから通電 · タップで回転 · 長押しで詳細
         </p>
       </div>
 
       {/* bench (draggable items) + sell zone */}
-      <div className="grid grid-cols-3 gap-2 mt-2">
+      <div className="grid grid-cols-3 gap-2 shrink-0">
         <div className="col-span-2 rounded-md p-2" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)', minHeight: 52 }}>
           <p className="gs-eyebrow mb-1" style={{ fontSize: '0.52rem' }}>控え — BENCH</p>
           <div className="flex flex-wrap gap-1.5">
