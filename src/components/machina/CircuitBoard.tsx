@@ -13,7 +13,7 @@
  *   classic/page.tsx の cellFromPoint / setPointerCapture / drag-ghost 方式を移植。
  * ========================================================================== */
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GRID_H, GRID_W, RARITY_META, footprint, itemById } from '@/lib/machina/data';
 import { CORE, TILE_DEFS, canPlaceItem, canPlaceTile } from '@/lib/machina/grid';
 import { sellValue, type RunState } from '@/lib/machina/run';
@@ -74,8 +74,13 @@ export function CircuitBoard(props: Props) {
   const dragRef = useRef<DragState | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const sellRef = useRef<HTMLDivElement>(null);
+  // long-press (board unit) → open detail. Cancelled by movement or early release.
+  const lpRef = useRef<number | null>(null);
+  const clearLongPress = () => { if (lpRef.current !== null) { window.clearTimeout(lpRef.current); lpRef.current = null; } };
 
   const setDragBoth = (d: DragState | null) => { dragRef.current = d; setDrag(d); };
+
+  useEffect(() => clearLongPress, []);
 
   /* map a client point to a grid cell (classic cellFromPoint) */
   const cellFromPoint = useCallback((x: number, y: number) => {
@@ -121,7 +126,20 @@ export function CircuitBoard(props: Props) {
       x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
       moved: false, hover: cellFromPoint(e.clientX, e.clientY), overSell: false,
     });
-  }, [cellFromPoint]);
+    // hold a board unit (without moving) to inspect it
+    clearLongPress();
+    if (d.type === 'item-move') {
+      const item = d.item;
+      lpRef.current = window.setTimeout(() => {
+        lpRef.current = null;
+        const cur = dragRef.current;
+        if (!cur || cur.moved) return; // a drag started — not a long-press
+        try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+        setDragBoth(null); // consume: the following pointerup won't rotate
+        onTapItem(item);
+      }, 450);
+    }
+  }, [cellFromPoint, onTapItem]);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     const cur = dragRef.current;
@@ -129,14 +147,16 @@ export function CircuitBoard(props: Props) {
     e.preventDefault();
     const hover = cellFromPoint(e.clientX, e.clientY);
     const moved = cur.moved || Math.hypot(e.clientX - cur.sx, e.clientY - cur.sy) > 7;
+    if (moved) clearLongPress(); // it's a drag, not a hold
     const sellable = cur.drag.type === 'item-move' || cur.drag.type === 'item-bench';
     const overSell = sellable && pointInRect(sellRef.current, e.clientX, e.clientY);
     setDragBoth({ ...cur, x: e.clientX, y: e.clientY, moved, hover, overSell });
   }, [cellFromPoint]);
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
+    clearLongPress();
     const d = dragRef.current;
-    if (!d) return;
+    if (!d) return; // long-press already consumed this gesture (detail opened)
     e.preventDefault();
     setDragBoth(null);
 
@@ -307,7 +327,7 @@ export function CircuitBoard(props: Props) {
                 key={p.id}
                 onPointerDown={(e) => onPointerDown(e, { type: 'item-move', item: p })}
                 className="absolute flex items-center justify-center select-none"
-                title={previewItem ? `${it.nameJa} → ${previewItem.nameJa} へ昇華予定（隣接素材）` : `${it.nameJa} — タップで詳細なし（移動/回転）`}
+                title={previewItem ? `${it.nameJa} → ${previewItem.nameJa} へ昇華予定（隣接素材）` : `${it.nameJa} — タップで回転 / 長押しで詳細 / ドラッグで移動`}
                 style={{
                   left: `${(p.x / GRID_W) * 100}%`, top: `${(p.y / GRID_H) * 100}%`,
                   width: `${(w / GRID_W) * 100}%`, height: `${(h / GRID_H) * 100}%`,
