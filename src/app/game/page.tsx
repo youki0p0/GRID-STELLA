@@ -606,21 +606,21 @@ function Play(props: {
     .map((k) => ({ kind: k, count: tray[k] }));
 
   return (
-    <div className="flex flex-col gap-3" style={{ animation: 'gsfade var(--dur-base) var(--ease-out)', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}>
+    <div className="flex flex-col gap-2" style={{ height: 'calc(100dvh - 2rem)', overflow: 'hidden', animation: 'gsfade var(--dur-base) var(--ease-out)', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}>
       {/* HUD */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-4 gap-2 shrink-0">
         <Hud label="回路" value={`${run.round}/${cfg.maxRounds}`} />
         <Hud label="勝利" value={`${run.wins}/${cfg.winsToCrown}`} accent />
         <Hud label="ライフ" value={'♥'.repeat(run.lives) || '—'} />
         <Hud label="ゴールド" value={`${run.gold}`} accent />
       </div>
-      <div className="flex items-center justify-between text-stone-400" style={{ fontSize: '0.64rem' }}>
+      <div className="flex items-center justify-between text-stone-400 shrink-0" style={{ fontSize: '0.64rem' }}>
         <span>{run.mode === 'short' ? 'SHORT' : 'LONG'} · {JOBS[run.job].role}</span>
         <span>⚡ 最大 {maxEnergy} · 回復 {energyRegen.toFixed(1)}/秒</span>
       </div>
 
       {/* SHOP */}
-      <div className="rounded-md p-2" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
+      <div className="rounded-md p-2 shrink-0" style={{ background: 'var(--surface-card)', border: '1px solid var(--gold-line-20)' }}>
         <div className="flex items-center justify-between mb-1.5">
           <p className="gs-eyebrow" style={{ fontSize: '0.58rem' }}>装置棚 — SHOP</p>
           <button onClick={onReroll} disabled={run.gold < REROLL_COST} className="rounded-sm px-2 py-1 font-display"
@@ -631,32 +631,34 @@ function Play(props: {
         <div className="grid grid-cols-4 gap-1.5">
           {Array.from({ length: SHOP_SLOTS }).map((_, i) => {
             const slot = shop[i];
-            if (!slot) return <div key={i} className="rounded-sm" style={{ aspectRatio: '3/4.4', background: 'var(--surface-cell)', border: '1px dashed var(--gold-line-20)' }} />;
+            if (!slot) return <div key={i} className="rounded-sm" style={{ aspectRatio: '3/3.7', background: 'var(--surface-cell)', border: '1px dashed var(--gold-line-20)' }} />;
             return <ShopCard key={slot.slotId} slot={slot} affordable={run.gold >= slot.item.cost} onBuy={() => onBuy(slot)} onInfo={() => onShowDetail(slot.item)} />;
           })}
         </div>
       </div>
 
-      {/* CIRCUIT BOARD (drag & drop) */}
-      <CircuitBoard
-        run={run}
-        powered={powered}
-        mergeIds={mergeIds}
-        fusedOrder={fusedOrder}
-        previewMap={previewMap}
-        tray={trayEntries}
-        onCommitItem={onCommitItem}
-        onRotateItem={onRotateItem}
-        onSellItem={onSellItem}
-        onCommitTile={onCommitTile}
-        onMoveTile={onMoveTile}
-        onRecallTile={onRecallTile}
-        onTapItem={onTapItem}
-      />
+      {/* CIRCUIT BOARD (drag & drop) — absorbs remaining height */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        <CircuitBoard
+          run={run}
+          powered={powered}
+          mergeIds={mergeIds}
+          fusedOrder={fusedOrder}
+          previewMap={previewMap}
+          tray={trayEntries}
+          onCommitItem={onCommitItem}
+          onRotateItem={onRotateItem}
+          onSellItem={onSellItem}
+          onCommitTile={onCommitTile}
+          onMoveTile={onMoveTile}
+          onRecallTile={onRecallTile}
+          onTapItem={onTapItem}
+        />
+      </div>
 
-      <p className="text-center text-stone-400 min-h-[1.1em]" style={{ fontSize: '0.68rem' }}>{msg}</p>
+      <p className="text-center text-stone-400 shrink-0 truncate" style={{ fontSize: '0.66rem' }}>{msg}</p>
 
-      <button onClick={onBattle} disabled={!hasWeapon} className="w-full rounded-sm font-display uppercase tracking-widest py-3"
+      <button onClick={onBattle} disabled={!hasWeapon} className="w-full rounded-sm font-display uppercase tracking-widest py-2.5 shrink-0"
         style={hasWeapon ? { ...GOLD_BTN, fontSize: '0.9rem' } : { background: 'var(--surface-raised)', color: 'var(--gold-300)', border: '1px solid var(--gold-line-40)', fontSize: '0.9rem', opacity: 0.6 }}>
         {hasWeapon ? '戦闘開始 — BATTLE ▶' : '⚡ 通電した武器が必要'}
       </button>
@@ -678,7 +680,7 @@ function ShopCard({ slot, affordable, onBuy, onInfo }: { slot: ShopSlot; afforda
   const tone = RARITY_META[it.rarity].tone;
   const cat = it.category ? CATEGORY_META[it.category] : null;
   return (
-    <div className="rounded-sm p-1 flex flex-col items-center relative" style={{ background: 'var(--ink-900)', border: `1px solid ${tone}55`, opacity: affordable ? 1 : 0.5, aspectRatio: '3/4.4' }}>
+    <div className="rounded-sm p-1 flex flex-col items-center relative" style={{ background: 'var(--ink-900)', border: `1px solid ${tone}55`, opacity: affordable ? 1 : 0.5, aspectRatio: '3/3.7' }}>
       <button onClick={onInfo} className="absolute top-0.5 right-0.5 leading-none rounded-full flex items-center justify-center" style={{ fontSize: '0.55rem', color: 'var(--gold-300)', width: 14, height: 14, border: '1px solid var(--gold-line-40)', background: 'var(--surface-card)' }} aria-label="詳細">ⓘ</button>
       <ItemSprite id={it.sprite} size={32} />
       <span className="mt-0.5 text-center leading-tight" style={{ fontSize: '0.48rem', color: 'var(--text-secondary)' }}>{it.nameJa}</span>
