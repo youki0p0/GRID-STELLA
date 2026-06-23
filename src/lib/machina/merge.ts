@@ -77,3 +77,14 @@ export function mergeCandidateIds(items: PlacedItem[]): Set<string> {
   }
   return out;
 }
+
+/**
+ * Preview map for pending fusions: baseId → result key. The base is the cell
+ * that survives and is upgraded; the UI uses this to show "→ result" on the
+ * surviving cell before the fusion resolves at shop phase.
+ */
+export function mergePreview(items: PlacedItem[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of pendingMerges(items)) out.set(m.baseId, m.result);
+  return out;
+}
