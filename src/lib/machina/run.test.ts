@@ -140,11 +140,19 @@ describe('adjacency-material fusion (merge)', () => {
   it('applyMerges consumes the material and upgrades the base in place', () => {
     const items = [item('b', 'st_breaker', 1, 0), item('m', 'mat_barrel', 2, 0)];
     const { items: next, fused } = applyMerges(items);
-    expect(fused).toEqual([{ result: 'st_breaker_mk2' }]);
+    expect(fused).toEqual([{ result: 'st_breaker_mk2', baseId: 'b' }]);
     expect(next).toHaveLength(1);
     expect(next[0].id).toBe('b'); // kept id + position
     expect(next[0].key).toBe('st_breaker_mk2');
     expect(next[0].x).toBe(1);
+  });
+
+  it('applyMerges reports baseId so the UI can flash the surviving cell', () => {
+    const items = [item('b', 'st_breaker', 1, 0), item('m', 'mat_barrel', 2, 0)];
+    const { items: next, fused } = applyMerges(items);
+    expect(fused[0].baseId).toBe('b');
+    // the flagged cell is exactly the survivor that kept its id
+    expect(next.find((p) => p.id === fused[0].baseId)).toBeTruthy();
   });
 
   it('mergeCandidateIds highlights both base and material', () => {

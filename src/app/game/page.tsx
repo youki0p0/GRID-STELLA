@@ -94,6 +94,8 @@ export default function GamePage() {
   const [shop, setShop] = useState<ShopSlot[]>([]);
   const [msg, setMsg] = useState('ジョブとモードを選び、コアから回路を組め。');
   const [toast, setToast] = useState<string | null>(null);
+  // ids of board cells that just fused — drives a short "昇華" flash on the board
+  const [fusedIds, setFusedIds] = useState<Set<string>>(new Set());
 
   // tile tray inventory (count of each kind available to place this run)
   const [tray, setTray] = useState<Record<TileKind, number>>({ plain: 0, clock: 0, battery: 0, shield: 0, power: 0 });
@@ -118,6 +120,12 @@ export default function GamePage() {
     const t = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(t);
   }, [toast]);
+
+  useEffect(() => {
+    if (fusedIds.size === 0) return;
+    const t = window.setTimeout(() => setFusedIds(new Set()), 1100);
+    return () => window.clearTimeout(t);
+  }, [fusedIds]);
 
   const cfg = MODES[run ? run.mode : mode];
 
@@ -345,6 +353,7 @@ export default function GamePage() {
       if (fused.length > 0) {
         const names = fused.map((f) => ITEM_MAP[f.result]?.nameJa ?? f.result).join('・');
         setToast(`融合成立 — ${names} へ昇華した。`);
+        setFusedIds(new Set(fused.map((f) => f.baseId)));
       }
       setMsg(won ? `勝利！ 第${next.round}回路へ。+${income}G。` : `敗北。ライフ ${lives} 残。+${income}G。`);
     },
@@ -422,6 +431,7 @@ export default function GamePage() {
             tray={tray}
             powered={powered}
             mergeIds={mergeIds}
+            fusedIds={fusedIds}
             maxEnergy={combatant.maxEnergy}
             energyRegen={combatant.energyRegen}
             hasWeapon={hasPoweredWeapon}
@@ -566,7 +576,7 @@ function ModeCard({ label, ja, desc, active, onClick }: { label: string; ja: str
 /* ============================================================ PLAY */
 function Play(props: {
   run: RunState; cfg: (typeof MODES)['short']; shop: ShopSlot[]; msg: string;
-  tray: Record<TileKind, number>; powered: Set<string>; mergeIds: Set<string>;
+  tray: Record<TileKind, number>; powered: Set<string>; mergeIds: Set<string>; fusedIds: Set<string>;
   maxEnergy: number; energyRegen: number; hasWeapon: boolean;
   onBuy: (s: ShopSlot) => void; onReroll: () => void;
   onCommitItem: (p: PlacedItem, x: number, y: number, rot: 0 | 1) => void;
@@ -576,7 +586,7 @@ function Play(props: {
   onTapItem: (p: PlacedItem) => void; onShowDetail: (it: Item) => void; onBattle: () => void;
 }) {
   const {
-    run, cfg, shop, msg, tray, powered, mergeIds, maxEnergy, energyRegen, hasWeapon,
+    run, cfg, shop, msg, tray, powered, mergeIds, fusedIds, maxEnergy, energyRegen, hasWeapon,
     onBuy, onReroll, onCommitItem, onRotateItem, onSellItem, onCommitTile, onMoveTile, onRecallTile,
     onTapItem, onShowDetail, onBattle,
   } = props;
@@ -622,6 +632,7 @@ function Play(props: {
         run={run}
         powered={powered}
         mergeIds={mergeIds}
+        fusedIds={fusedIds}
         tray={trayEntries}
         onCommitItem={onCommitItem}
         onRotateItem={onRotateItem}
