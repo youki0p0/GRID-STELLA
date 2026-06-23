@@ -45,6 +45,7 @@ import { uniqueChoices } from '@/lib/machina/unique';
 import { DEFAULT_RANK, applyCrown, applyResult, loadRank, myRating, pveRating, rankLabel, saveRank, tierOf } from '@/lib/machina/rank';
 import { STATUS_META } from '@/lib/machina/status';
 import { hashString } from '@/lib/arena/rng';
+import { playSfx } from '@/lib/merge/fx';
 import type { BattleSim, Item, JobId, Mode, PlacedItem, PlacedTile, RankState, StatusKey, StatusState, TileKind } from '@/lib/machina/types';
 import { ItemSprite } from '@/components/arena/ItemSprite';
 import { CircuitBoard, type TileTrayEntry } from '@/components/machina/CircuitBoard';
@@ -354,6 +355,7 @@ export default function GamePage() {
         const names = fused.map((f) => ITEM_MAP[f.result]?.nameJa ?? f.result).join('・');
         setToast(`融合成立 — ${names} へ昇華した。`);
         setFusedIds(new Set(fused.map((f) => f.baseId)));
+        playSfx('merge'); // gold flash + ★ pop now ring with a short fusion chime
       }
       setMsg(won ? `勝利！ 第${next.round}回路へ。+${income}G。` : `敗北。ライフ ${lives} 残。+${income}G。`);
     },
