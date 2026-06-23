@@ -271,7 +271,7 @@ export function simulate(player: Combatant, enemy: Combatant, seed: number, maxT
     tickSide(E, P);
     t += dt;
     if (t >= nextFrame) {
-      frames.push({ t: Math.round(t * 10) / 10, pHp: Math.max(0, P.hp), pShield: P.shield, pEnergy: P.energy, eHp: Math.max(0, E.hp), eShield: E.shield, eEnergy: E.energy });
+      frames.push({ t: Math.round(t * 10) / 10, pHp: Math.max(0, P.hp), pShield: P.shield, pEnergy: P.energy, eHp: Math.max(0, E.hp), eShield: E.shield, eEnergy: E.energy, pStatus: clone(P.status), eStatus: clone(E.status) });
       nextFrame += 0.5;
     }
     if (t >= nextLog && P.hp > 0 && E.hp > 0) {

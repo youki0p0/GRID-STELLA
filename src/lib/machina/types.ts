@@ -186,6 +186,8 @@ export interface BattleFrame {
   eHp: number;
   eShield: number;
   eEnergy: number;
+  pStatus?: StatusState;
+  eStatus?: StatusState;
 }
 
 export type BattleResult = 'win' | 'lose' | 'draw';
@@ -208,4 +210,18 @@ export interface ModeConfig {
   startGold: number;
   goldPerRound: number;
   scale: number;
+}
+
+/* ── rank (separate short/long ladders) ── */
+export type Tier = 'Scrap' | 'Iron' | 'Cobalt' | 'Plasma' | 'Quantum' | 'Singularity';
+
+export interface RankState {
+  shortRating: number;
+  longRating: number;
+  shortWins: number;
+  longWins: number;
+  shortPeak: number;
+  longPeak: number;
+  shortCrowns: number;
+  longCrowns: number;
 }
